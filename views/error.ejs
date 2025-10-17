@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Error</title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+  <style>
+    .error-container {
+      text-align: center;
+      padding: 60px 20px;
+    }
+    .error-code {
+      font-size: 72px;
+      font-weight: bold;
+      color: #ef4444;
+      margin-bottom: 20px;
+    }
+    .error-message {
+      font-size: 24px;
+      color: #666;
+      margin-bottom: 30px;
+    }
+    .back-link {
+      display: inline-block;
+      padding: 12px 24px;
+      background: #667eea;
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      transition: all 0.3s;
+    }
+    .back-link:hover {
+      background: #5568d3;
+      transform: translateY(-2px);
+    }
+  </style>
+</head>
+<body>
+  <div class="screen active">
+    <div class="container">
+      <div class="error-container">
+        <div class="error-code">⚠️</div>
+        <h1>Oops!</h1>
+        <p class="error-message"><%= message %></p>
+        <a href="/" class="back-link">Return to Home</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+

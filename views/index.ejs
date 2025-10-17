@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Role Selection Screen -->
+    <div id="roleSelection" class="screen active">
+      <div class="container">
+        <h1>🎭 ARC Beta</h1>
+        <h2>Multiplayer WebXR Theatre</h2>
+        <p class="subtitle">Select your role to join the lobby</p>
+        
+        <div class="name-input">
+          <label for="playerName">Your Name:</label>
+          <input type="text" id="playerName" placeholder="Enter your name" value="Player">
+        </div>
+
+        <div class="role-buttons">
+          <button class="role-btn director" data-role="Director">
+            <span class="role-icon">🎬</span>
+            <h3>Director</h3>
+            <p>Control the scene, elevated camera view</p>
+          </button>
+          
+          <button class="role-btn actor" data-role="Actor">
+            <span class="role-icon">🎭</span>
+            <h3>Actor</h3>
+            <p>Perform on stage, first-person view</p>
+          </button>
+          
+          <button class="role-btn audience" data-role="Audience">
+            <span class="role-icon">👥</span>
+            <h3>Audience</h3>
+            <p>Watch the performance, explore freely</p>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lobby Screen -->
+    <div id="lobby" class="screen">
+      <div class="container">
+        <h1>🎭 Lobby</h1>
+        <p class="role-display">Your role: <span id="currentRole"></span></p>
+        
+        <div class="lobby-content">
+          <div class="users-panel">
+            <h3>Connected Users</h3>
+            <div id="usersList"></div>
+          </div>
+          
+          <div class="actions-panel">
+            <div id="directorControls" style="display: none;">
+              <button id="activateBtn" class="action-btn primary">
+                🚀 Activate Level
+              </button>
+              <p class="help-text">Click to start the experience for everyone</p>
+            </div>
+            
+            <div id="waitingMessage" style="display: none;">
+              <p class="waiting">⏳ Waiting for Director to activate the level...</p>
+            </div>
+          </div>
+        </div>
+        
+        <div class="status-bar">
+          <span id="connectionStatus">🔌 Connected</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let socket;
+    let currentRole;
+    let currentName;
+
+    // Role selection
+    document.querySelectorAll('.role-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const role = btn.dataset.role;
+        const name = document.getElementById('playerName').value.trim() || 'Player';
+        selectRole(role, name);
+      });
+    });
+
+    function selectRole(role, name) {
+      currentRole = role;
+      currentName = name;
+      
+      // Connect to Socket.IO
+      socket = io();
+      
+      socket.on('connect', () => {
+        console.log('Connected:', socket.id);
+        socket.emit('joinLobby', { role, name });
+        showLobby();
+      });
+
+      socket.on('lobbyState', (data) => {
+        updateUsersList(data.users);
+      });
+
+      socket.on('userJoined', (data) => {
+        addUserToList(data);
+      });
+
+      socket.on('userLeft', (data) => {
+        removeUserFromList(data.id);
+      });
+
+      socket.on('startExperience', () => {
+        // Redirect to VR scene
+        window.location.href = '/scene?role=' + currentRole + '&name=' + encodeURIComponent(currentName);
+      });
+
+      socket.on('error', (data) => {
+        alert('Error: ' + data.message);
+      });
+    }
+
+    function showLobby() {
+      document.getElementById('roleSelection').classList.remove('active');
+      document.getElementById('lobby').classList.add('active');
+      document.getElementById('currentRole').textContent = currentRole;
+      
+      if (currentRole === 'Director') {
+        document.getElementById('directorControls').style.display = 'block';
+        document.getElementById('activateBtn').addEventListener('click', () => {
+          socket.emit('activateLevel');
+        });
+      } else {
+        document.getElementById('waitingMessage').style.display = 'block';
+      }
+    }
+
+    function updateUsersList(users) {
+      const list = document.getElementById('usersList');
+      list.innerHTML = '';
+      users.forEach(user => {
+        addUserToList(user);
+      });
+    }
+
+    function addUserToList(user) {
+      const list = document.getElementById('usersList');
+      if (document.getElementById('user-' + user.id)) return;
+      
+      const userElement = document.createElement('div');
+      userElement.className = 'user-item';
+      userElement.id = 'user-' + user.id;
+      
+      const roleIcon = user.role === 'Director' ? '🎬' : user.role === 'Actor' ? '🎭' : '👥';
+      userElement.innerHTML = `
+        <span class="user-icon">${roleIcon}</span>
+        <span class="user-name">${user.name}</span>
+        <span class="user-role">${user.role}</span>
+      `;
+      list.appendChild(userElement);
+    }
+
+    function removeUserFromList(userId) {
+      const userElement = document.getElementById('user-' + userId);
+      if (userElement) {
+        userElement.remove();
+      }
+    }
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #000;
+    }
+    
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 100;
+      max-width: 300px;
+    }
+    
+    #info h3 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+    }
+    
+    #info p {
+      margin: 5px 0;
+    }
+    
+    .controls {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.3);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 24px;
+      z-index: 1000;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/examples/jsm/webxr/VRButton.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js",
+        "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loading">Loading...</div>
+  
+  <div id="info">
+    <h3 id="roleDisplay"></h3>
+    <p id="playerName"></p>
+    <p>🔌 <span id="connectionStatus">Connecting...</span></p>
+    <p>👥 Players: <span id="playerCount">0</span></p>
+    
+    <div class="controls">
+      <strong>Controls:</strong><br>
+      • WASD / Arrow Keys - Move<br>
+      • Mouse - Look around<br>
+      • Space - Jump<br>
+      • Click - Lock pointer<br>
+      • ESC - Release pointer
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module">
+    import { ARCClient } from '/js/arc-client.js';
+    
+    // Get role and name from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const role = urlParams.get('role') || 'Audience';
+    const playerName = urlParams.get('name') || 'Player';
+    
+    // Update UI
+    document.getElementById('roleDisplay').textContent = role;
+    document.getElementById('playerName').textContent = playerName;
+    
+    // Initialize ARC Client
+    const arcClient = new ARCClient(role, playerName);
+    const socketClient = arcClient.getSocketClient();
+    
+    // Join lobby
+    socketClient.joinLobby(role, playerName);
+    
+    // Update connection status
+    document.getElementById('connectionStatus').textContent = 'Connected';
+    
+    // Track player count
+    let playerCount = 1;
+    socketClient.onUserJoined((data) => {
+      playerCount++;
+      document.getElementById('playerCount').textContent = playerCount;
+    });
+    
+    socketClient.onUserLeft((data) => {
+      playerCount--;
+      document.getElementById('playerCount').textContent = playerCount;
+    });
+    
+    // Hide loading
+    document.getElementById('loading').style.display = 'none';
+  </script>
+</body>
+</html>
+
