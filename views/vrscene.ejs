@@ -82,9 +82,8 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/js/arc-client.js"></script>
   <script type="module">
-    import { ARCClient } from '/js/arc-client.js';
-    
     // Get role and name from URL
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role') || 'Audience';
@@ -94,8 +93,8 @@
     document.getElementById('roleDisplay').textContent = role;
     document.getElementById('playerName').textContent = playerName;
     
-    // Initialize ARC Client
-    const arcClient = new ARCClient(role, playerName);
+    // Initialize ARC Client (from window object)
+    const arcClient = new window.ARCClient(role, playerName);
     const socketClient = arcClient.getSocketClient();
     
     // Join lobby
@@ -104,9 +103,10 @@
     // Update connection status
     document.getElementById('connectionStatus').textContent = 'Connected';
     
-    // Track player count
+    // Track player count (skip increment when the "joined" user is self)
     let playerCount = 1;
     socketClient.onUserJoined((data) => {
+      if (data.id === socketClient.getSocketId()) return;
       playerCount++;
       document.getElementById('playerCount').textContent = playerCount;
     });

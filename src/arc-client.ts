@@ -14,22 +14,26 @@ export class ARCClient {
   private role: string;
   private playerName: string;
   private remotePlayers: Map<string, THREE.Group> = new Map();
+  private remotePlayerPhysics: Map<string, { position: THREE.Vector3; rotation: THREE.Euler; velocity: THREE.Vector3 }> = new Map();
   private lastUpdateTime = 0;
   private updateInterval = 50; // 20 updates per second
+  private physicsUpdateInterval = 16; // 60 FPS for physics
+  private gltfLoader: GLTFLoader;
 
   constructor(role: string, playerName: string) {
     this.role = role;
     this.playerName = playerName;
     this.clock = new THREE.Clock();
     this.socketClient = new SocketClient();
+    this.gltfLoader = new GLTFLoader();
 
     // Initialize scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x87ceeb); // Sky blue
 
-    // Initialize camera
+    // Initialize camera (60° vertical FOV = natural FPS look; 75° can feel like a fishbowl)
     this.camera = new THREE.PerspectiveCamera(
-      75,
+      60,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
@@ -47,8 +51,19 @@ export class ARCClient {
     this.setupScene();
     this.setupNetworking();
     this.setupFPSController();
+    this.setupLocalPlayerModel();
     this.setupWindowResize();
     this.animate();
+  }
+
+  private async setupLocalPlayerModel(): Promise<void> {
+    // Load the local player's avatar model based on their role
+    try {
+      await this.loadPlayerModel(null, this.role, this.playerName);
+      console.log(`✅ Local player model loaded for ${this.role}`);
+    } catch (error) {
+      console.warn(`⚠️ Could not load local player model:`, error);
+    }
   }
 
   private setupScene(): void {
@@ -112,7 +127,10 @@ export class ARCClient {
 
     // Handle user joined
     this.socketClient.onUserJoined((data: any) => {
-      this.addRemotePlayer(data.id, data.name, data.role);
+      if (data.id === this.socketClient.getSocketId()) return;
+      this.addRemotePlayer(data.id, data.name, data.role).catch(err => {
+        console.error(`Failed to add remote player ${data.name}:`, err);
+      });
     });
 
     // Handle user left
@@ -121,31 +139,31 @@ export class ARCClient {
     });
   }
 
-  private addRemotePlayer(id: string, name: string, role: string): void {
+  private async addRemotePlayer(id: string, name: string, role: string): Promise<void> {
     if (this.remotePlayers.has(id)) return;
 
-    // Create a placeholder avatar (simple capsule)
     const playerGroup = new THREE.Group();
 
-    // Body
-    const bodyGeometry = new THREE.CapsuleGeometry(0.3, 1.2, 4, 8);
-    const bodyMaterial = new THREE.MeshStandardMaterial({
-      color: role === 'Director' ? 0xffaa00 : role === 'Actor' ? 0x00aaff : 0xaa00ff
-    });
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    body.position.y = 0.9;
-    body.castShadow = true;
-    playerGroup.add(body);
+    // Try to load model based on role
+    await this.loadPlayerModel(playerGroup, role, name);
 
-    // Head
-    const headGeometry = new THREE.SphereGeometry(0.2, 16, 16);
-    const headMaterial = new THREE.MeshStandardMaterial({ color: 0xffddaa });
-    const head = new THREE.Mesh(headGeometry, headMaterial);
-    head.position.y = 1.7;
-    head.castShadow = true;
-    playerGroup.add(head);
+    this.scene.add(playerGroup);
+    this.remotePlayers.set(id, playerGroup);
+    playerGroup.position.set(0, 1.6, 0);
+    console.log(`➕ Added remote player: ${name} (${role})`);
+  }
 
-    // Name label (using sprite)
+  private async loadPlayerModel(playerGroup: THREE.Group | null, role: string, name: string): Promise<void> {
+    // For now we always use a simple square/cube placeholder for players
+    if (playerGroup) {
+      this.createPlaceholderAvatar(playerGroup, role, name);
+    }
+
+    return;
+  }
+
+  private addNameLabel(playerGroup: THREE.Group, name: string): void {
+    // Name label
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d')!;
     canvas.width = 256;
@@ -163,15 +181,34 @@ export class ARCClient {
     sprite.position.y = 2.2;
     sprite.scale.set(2, 0.5, 1);
     playerGroup.add(sprite);
+  }
 
-    this.scene.add(playerGroup);
-    this.remotePlayers.set(id, playerGroup);
-    console.log(`➕ Added remote player: ${name} (${role})`);
+  private createPlaceholderAvatar(playerGroup: THREE.Group, role: string, name: string): void {
+    // Single cube "square" body
+    const bodyGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: role === 'Director' ? 0xffaa00 : role === 'Actor' ? 0x00aaff : 0xaa00ff
+    });
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.position.y = 0.5;
+    body.castShadow = true;
+    playerGroup.add(body);
+
+    // Add name label
+    this.addNameLabel(playerGroup, name);
   }
 
   private updateRemotePlayer(id: string, position: any, rotation: any): void {
     const player = this.remotePlayers.get(id);
     if (player) {
+      // Store physics data for interpolation
+      this.remotePlayerPhysics.set(id, {
+        position: new THREE.Vector3(position.x, position.y, position.z),
+        rotation: new THREE.Euler(rotation.x, rotation.y, rotation.z),
+        velocity: new THREE.Vector3() // Will be calculated from position differences
+      });
+      
+      // Apply immediate position update
       player.position.set(position.x, position.y, position.z);
       player.rotation.set(rotation.x, rotation.y, rotation.z);
     }
@@ -198,9 +235,12 @@ export class ARCClient {
     this.renderer.setAnimationLoop(() => {
       const delta = this.clock.getDelta();
 
-      // Update FPS controller
+      // Update FPS controller (includes physics)
       if (this.fpsController) {
         this.fpsController.update(delta);
+        
+        // Add subtle camera bob when landing
+        this.addCameraBob();
       }
 
       // Send position updates to server (throttled)
@@ -209,6 +249,9 @@ export class ARCClient {
         this.sendPositionUpdate();
         this.lastUpdateTime = now;
       }
+
+      // Interpolate remote players for smooth movement
+      this.interpolateRemotePlayers(delta);
 
       // Render scene
       this.renderer.render(this.scene, this.camera);
@@ -226,11 +269,90 @@ export class ARCClient {
     }
   }
 
+  private addCameraBob(): void {
+    if (!this.fpsController) return;
+    
+    // Add subtle camera bob when moving and grounded
+    if (this.fpsController.isGrounded()) {
+      // Simple bob effect based on movement
+      const bobIntensity = 0.01;
+      const bobSpeed = 0.15;
+      const time = this.clock.getElapsedTime();
+      
+      // Check if player is moving (this would need to be tracked in FPSController)
+      const bob = Math.sin(time * bobSpeed) * bobIntensity;
+      this.camera.position.y += bob * 0.1; // Very subtle effect
+    }
+  }
+
+  private interpolateRemotePlayers(delta: number): void {
+    // Smooth interpolation for remote players
+    this.remotePlayers.forEach((player, id) => {
+      const physicsData = this.remotePlayerPhysics.get(id);
+      if (physicsData) {
+        // Interpolate position
+        const targetPosition = physicsData.position;
+        const currentPosition = player.position;
+        
+        currentPosition.lerp(targetPosition, delta * 10); // Smooth interpolation
+        
+        // Interpolate rotation
+        const targetRotation = physicsData.rotation;
+        const currentRotation = player.rotation;
+        
+        currentRotation.x = THREE.MathUtils.lerp(currentRotation.x, targetRotation.x, delta * 10);
+        currentRotation.y = THREE.MathUtils.lerp(currentRotation.y, targetRotation.y, delta * 10);
+        currentRotation.z = THREE.MathUtils.lerp(currentRotation.z, targetRotation.z, delta * 10);
+      }
+    });
+  }
+
   public getSocketClient(): SocketClient {
     return this.socketClient;
   }
+
+  // Model loading utilities
+  public async loadModel(modelPath: string): Promise<THREE.Group> {
+    return new Promise((resolve, reject) => {
+      this.gltfLoader.load(
+        modelPath,
+        (gltf) => {
+          const model = gltf.scene;
+          // Enable shadows for loaded models
+          model.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+          resolve(model);
+        },
+        (progress) => {
+          console.log(`Loading ${modelPath}: ${(progress.loaded / progress.total * 100)}%`);
+        },
+        (error) => {
+          console.error(`Error loading model ${modelPath}:`, error);
+          reject(error);
+        }
+      );
+    });
+  }
+
+  public async loadEnvironmentModel(modelPath: string, position?: THREE.Vector3, rotation?: THREE.Euler): Promise<void> {
+    try {
+      const model = await this.loadModel(modelPath);
+      
+      if (position) model.position.copy(position);
+      if (rotation) model.rotation.copy(rotation);
+      
+      this.scene.add(model);
+      console.log(`✅ Loaded environment model: ${modelPath}`);
+    } catch (error) {
+      console.error(`❌ Failed to load environment model: ${modelPath}`, error);
+    }
+  }
 }
 
-// Export for use in VR scene page
+// Prevent tree-shaking by using the export
 (window as any).ARCClient = ARCClient;
 

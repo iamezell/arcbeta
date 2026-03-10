@@ -4,8 +4,8 @@ export class SocketClient {
   private socket: Socket;
   private onStartExperienceCallback?: () => void;
   private onPlayerMoveCallback?: (data: any) => void;
-  private onUserJoinedCallback?: (data: any) => void;
-  private onUserLeftCallback?: (data: any) => void;
+  private onUserJoinedCallbacks: Array<(data: any) => void> = [];
+  private onUserLeftCallbacks: Array<(data: any) => void> = [];
 
   constructor() {
     // Connect to Socket.IO server
@@ -45,28 +45,22 @@ export class SocketClient {
 
     this.socket.on('userJoined', (data: any) => {
       console.log('👤 User joined:', data.name, data.role);
-      if (this.onUserJoinedCallback) {
-        this.onUserJoinedCallback(data);
-      }
+      this.onUserJoinedCallbacks.forEach(cb => cb(data));
     });
 
     this.socket.on('userLeft', (data: any) => {
       console.log('👋 User left:', data.name);
-      if (this.onUserLeftCallback) {
-        this.onUserLeftCallback(data);
-      }
+      this.onUserLeftCallbacks.forEach(cb => cb(data));
     });
 
     this.socket.on('lobbyState', (data: any) => {
       console.log('📋 Lobby state:', data.users);
       // Update UI with current lobby users
-      if (this.onUserJoinedCallback) {
-        data.users.forEach((user: any) => {
-          if (user.id !== this.socket.id) {
-            this.onUserJoinedCallback!(user);
-          }
-        });
-      }
+      data.users.forEach((user: any) => {
+        if (user.id !== this.socket.id) {
+          this.onUserJoinedCallbacks.forEach(cb => cb(user));
+        }
+      });
     });
   }
 
@@ -91,11 +85,11 @@ export class SocketClient {
   }
 
   public onUserJoined(callback: (data: any) => void): void {
-    this.onUserJoinedCallback = callback;
+    this.onUserJoinedCallbacks.push(callback);
   }
 
   public onUserLeft(callback: (data: any) => void): void {
-    this.onUserLeftCallback = callback;
+    this.onUserLeftCallbacks.push(callback);
   }
 
   public getSocketId(): string {

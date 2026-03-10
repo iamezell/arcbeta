@@ -14,7 +14,7 @@ dotenv.config();
 connectDB();
 
 // Read SSL certificates
-const sslPath = path.join(__dirname, '../ssl');
+const sslPath = path.join(__dirname, '../../ssl');
 const key = fs.readFileSync(path.join(sslPath, 'server.key'));
 const cert = fs.readFileSync(path.join(sslPath, 'server.cert'));
 

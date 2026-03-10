@@ -46,8 +46,18 @@ export default function registerLobbySocket(io: Server): void {
           role: user.role
         });
 
-        // Send current lobby users to the new user
-        const lobbyUsers = await User.find({ roomId: 'lobby' });
+        // Clean up any stale lobby users whose sockets are no longer connected
+        const connectedSocketIds = Array.from(io.sockets.sockets.keys());
+        await User.deleteMany({
+          roomId: 'lobby',
+          socketId: { $nin: connectedSocketIds }
+        });
+
+        // Send current lobby users (only those with live sockets) to the new user
+        const lobbyUsers = await User.find({
+          roomId: 'lobby',
+          socketId: { $in: connectedSocketIds }
+        });
         socket.emit('lobbyState', {
           users: lobbyUsers.map(u => ({
             id: u.socketId,

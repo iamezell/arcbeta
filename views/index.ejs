@@ -108,6 +108,7 @@
       });
 
       socket.on('userJoined', (data) => {
+        if (data.id === socket.id) return; // don't add self (we're already in list from lobbyState)
         addUserToList(data);
       });
 
@@ -143,9 +144,14 @@
     function updateUsersList(users) {
       const list = document.getElementById('usersList');
       list.innerHTML = '';
-      users.forEach(user => {
-        addUserToList(user);
+      // Dedupe by id so we never show the same user twice (e.g. if server sent duplicates)
+      const seen = new Set();
+      const unique = users.filter(u => {
+        if (seen.has(u.id)) return false;
+        seen.add(u.id);
+        return true;
       });
+      unique.forEach(user => addUserToList(user));
     }
 
     function addUserToList(user) {

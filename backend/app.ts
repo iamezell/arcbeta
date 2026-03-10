@@ -7,14 +7,14 @@ import lobbyRouter from './routes/lobby';
 const app: Application = express();
 
 // View engine setup
-app.set('views', path.join(__dirname, '../views'));
+app.set('views', path.join(__dirname, '../../views'));
 app.set('view engine', 'ejs');
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, '../../public')));
 
 // Routes
 app.use('/', indexRouter);
