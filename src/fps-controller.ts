@@ -191,5 +191,13 @@ export class FPSController {
   public getPhysicsManager(): PhysicsManager {
     return this.physicsManager;
   }
+
+  /** Set movement from VR controller thumbstick (e.g. from gamepad axes). */
+  public setVRMovement(forward: boolean, backward: boolean, left: boolean, right: boolean): void {
+    this.moveForward = forward;
+    this.moveBackward = backward;
+    this.moveLeft = left;
+    this.moveRight = right;
+  }
 }
 

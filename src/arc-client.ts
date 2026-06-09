@@ -3,9 +3,11 @@ import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FPSController } from './fps-controller';
 import { SocketClient } from './socket-client';
+import { RoomController } from './room/RoomController';
 
 export class ARCClient {
   private scene: THREE.Scene;
+  private sceneWrapper: THREE.Group;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private clock: THREE.Clock;
@@ -19,6 +21,9 @@ export class ARCClient {
   private updateInterval = 50; // 20 updates per second
   private physicsUpdateInterval = 16; // 60 FPS for physics
   private gltfLoader: GLTFLoader;
+  private vrThumbstickDeadzone = 0.4;
+  private hemisphereLight!: THREE.HemisphereLight;
+  private roomController: RoomController | null = null;
 
   constructor(role: string, playerName: string) {
     this.role = role;
@@ -29,7 +34,9 @@ export class ARCClient {
 
     // Initialize scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87ceeb); // Sky blue
+    this.scene.background = new THREE.Color(0x101014); // Dark interior
+    this.sceneWrapper = new THREE.Group();
+    this.scene.add(this.sceneWrapper);
 
     // Initialize camera (60° vertical FOV = natural FPS look; 75° can feel like a fishbowl)
     this.camera = new THREE.PerspectiveCamera(
@@ -52,8 +59,20 @@ export class ARCClient {
     this.setupNetworking();
     this.setupFPSController();
     this.setupLocalPlayerModel();
+    this.setupRoom();
     this.setupWindowResize();
     this.animate();
+  }
+
+  private setupRoom(): void {
+    // The room is built entirely from server data once `roomState` arrives.
+    this.roomController = new RoomController({
+      camera: this.camera,
+      socket: this.socketClient,
+      sceneParent: this.sceneWrapper,
+      roomLight: this.hemisphereLight,
+      role: this.role,
+    });
   }
 
   private async setupLocalPlayerModel(): Promise<void> {
@@ -67,15 +86,19 @@ export class ARCClient {
   }
 
   private setupScene(): void {
-    // Lighting
+    // All environment content goes in sceneWrapper so we can shift the world for VR locomotion
+    const wrap = this.sceneWrapper;
+
+    // Lighting (hemisphere light is dimmable by the Director via room_light state)
     const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
     hemisphereLight.position.set(0, 20, 0);
-    this.scene.add(hemisphereLight);
+    wrap.add(hemisphereLight);
+    this.hemisphereLight = hemisphereLight;
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(5, 10, 5);
     directionalLight.castShadow = true;
-    this.scene.add(directionalLight);
+    wrap.add(directionalLight);
 
     // Ground
     const groundGeometry = new THREE.PlaneGeometry(100, 100);
@@ -87,28 +110,15 @@ export class ARCClient {
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
-    this.scene.add(ground);
+    wrap.add(ground);
 
     // Grid helper
     const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x000000);
     gridHelper.material.opacity = 0.2;
     gridHelper.material.transparent = true;
-    this.scene.add(gridHelper);
+    wrap.add(gridHelper);
 
-    // Add some reference objects
-    const cubeGeometry = new THREE.BoxGeometry(2, 2, 2);
-    const cubeMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-    const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
-    cube.position.set(5, 1, -5);
-    cube.castShadow = true;
-    this.scene.add(cube);
-
-    const sphereGeometry = new THREE.SphereGeometry(1.5, 32, 32);
-    const sphereMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-    sphere.position.set(-5, 1.5, -5);
-    sphere.castShadow = true;
-    this.scene.add(sphere);
+    // Interactive room geometry is built by RoomController from server data.
   }
 
   private setupFPSController(): void {
@@ -147,7 +157,7 @@ export class ARCClient {
     // Try to load model based on role
     await this.loadPlayerModel(playerGroup, role, name);
 
-    this.scene.add(playerGroup);
+    this.sceneWrapper.add(playerGroup);
     this.remotePlayers.set(id, playerGroup);
     playerGroup.position.set(0, 1.6, 0);
     console.log(`➕ Added remote player: ${name} (${role})`);
@@ -217,7 +227,7 @@ export class ARCClient {
   private removeRemotePlayer(id: string): void {
     const player = this.remotePlayers.get(id);
     if (player) {
-      this.scene.remove(player);
+      this.sceneWrapper.remove(player);
       this.remotePlayers.delete(id);
       console.log(`➖ Removed remote player: ${id}`);
     }
@@ -232,15 +242,27 @@ export class ARCClient {
   }
 
   private animate = (): void => {
-    this.renderer.setAnimationLoop(() => {
+    this.renderer.setAnimationLoop((time: number, frame: XRFrame | undefined) => {
       const delta = this.clock.getDelta();
+      const inVR = !!(frame && this.renderer.xr.isPresenting);
+
+      // VR: read thumbstick and drive movement
+      if (inVR && this.fpsController) {
+        this.updateVRMovement();
+      }
 
       // Update FPS controller (includes physics)
       if (this.fpsController) {
         this.fpsController.update(delta);
-        
-        // Add subtle camera bob when landing
-        this.addCameraBob();
+        if (!inVR) this.addCameraBob();
+      }
+
+      // VR: shift world so player position matches physics (camera is driven by headset)
+      if (inVR && this.fpsController) {
+        const pos = this.fpsController.getPosition();
+        this.sceneWrapper.position.set(-pos.x, -pos.y, -pos.z);
+      } else {
+        this.sceneWrapper.position.set(0, 0, 0);
       }
 
       // Send position updates to server (throttled)
@@ -253,10 +275,39 @@ export class ARCClient {
       // Interpolate remote players for smooth movement
       this.interpolateRemotePlayers(delta);
 
+      // Raycast for interactable room objects (desktop focus for the MVP)
+      if (this.roomController && !inVR) {
+        this.roomController.update();
+      }
+
       // Render scene
       this.renderer.render(this.scene, this.camera);
     });
   };
+
+  private updateVRMovement(): void {
+    const session = this.renderer.xr.getSession();
+    if (!session || !this.fpsController) return;
+    const sources = session.getInputSources();
+    const dz = this.vrThumbstickDeadzone;
+    let forward = false;
+    let backward = false;
+    let left = false;
+    let right = false;
+    // Prefer left controller for movement; fall back to any controller with a gamepad
+    const leftSource = sources.find(s => s.hand === 'left' && s.gamepad && s.gamepad.axes.length >= 2);
+    const moveSource = leftSource ?? sources.find(s => s.gamepad && s.gamepad.axes.length >= 2);
+    if (moveSource?.gamepad) {
+      const gp = moveSource.gamepad;
+      const x = gp.axes[0] ?? 0;
+      const y = gp.axes[1] ?? 0;
+      if (x < -dz) left = true;
+      if (x > dz) right = true;
+      if (y < -dz) forward = true;
+      if (y > dz) backward = true;
+    }
+    this.fpsController.setVRMovement(forward, backward, left, right);
+  }
 
   private sendPositionUpdate(): void {
     if (this.fpsController) {
@@ -345,7 +396,7 @@ export class ARCClient {
       if (position) model.position.copy(position);
       if (rotation) model.rotation.copy(rotation);
       
-      this.scene.add(model);
+      this.sceneWrapper.add(model);
       console.log(`✅ Loaded environment model: ${modelPath}`);
     } catch (error) {
       console.error(`❌ Failed to load environment model: ${modelPath}`, error);

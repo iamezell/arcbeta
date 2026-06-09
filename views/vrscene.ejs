@@ -73,11 +73,14 @@
     
     <div class="controls">
       <strong>Controls:</strong><br>
+      <strong>Desktop:</strong><br>
       • WASD / Arrow Keys - Move<br>
       • Mouse - Look around<br>
       • Space - Jump<br>
       • Click - Lock pointer<br>
-      • ESC - Release pointer
+      • ESC - Release pointer<br>
+      <strong>VR:</strong><br>
+      • Thumbstick - Move (left controller)
     </div>
   </div>
 
@@ -97,8 +100,8 @@
     const arcClient = new window.ARCClient(role, playerName);
     const socketClient = arcClient.getSocketClient();
     
-    // Join lobby
-    socketClient.joinLobby(role, playerName);
+    // Join lobby (fromScene = true: this socket is already inside the experience)
+    socketClient.joinLobby(role, playerName, true);
     
     // Update connection status
     document.getElementById('connectionStatus').textContent = 'Connected';

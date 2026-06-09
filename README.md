@@ -93,6 +93,11 @@ arcbeta/
    MONGODB_PASSWORD=your_mongodb_password
    MONGODB_URI=mongodb+srv://iamezell_db_user:<db_password>@cluster0.odat5ym.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
    PORT=443
+   # Shared secret for the Director's Stream Deck "admit players" button (POST /lobby/admit)
+   STREAM_DECK_TOKEN=choose-a-long-random-secret
+   # Optional: plain-HTTP port (localhost only) for the Stream Deck admit endpoint.
+   # Use this if your Stream Deck plugin can't accept the self-signed HTTPS cert.
+   ADMIT_HTTP_PORT=8080
    ```
 
 4. **Generate SSL certificates**

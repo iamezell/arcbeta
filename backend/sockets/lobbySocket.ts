@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import User from '../models/User';
 import Room from '../models/Room';
 import { isValidRole, UserRole } from '../utils/roles';
+import { getSession, emitApplyResult } from '../rooms/sessionManager';
 
 interface PlayerMoveData {
   position: { x: number; y: number; z: number };
@@ -11,6 +12,19 @@ interface PlayerMoveData {
 interface JoinLobbyData {
   role: UserRole;
   name: string;
+  // Sent by the 3D scene page so we know this socket is in the experience,
+  // not waiting on the lobby page to be admitted.
+  fromScene?: boolean;
+}
+
+interface InteractData {
+  objectId: string;
+  action: string;
+  payload?: { code?: string };
+}
+
+interface DirectorActionData {
+  eventId: string;
 }
 
 export default function registerLobbySocket(io: Server): void {
@@ -20,7 +34,7 @@ export default function registerLobbySocket(io: Server): void {
     // Handle user joining lobby
     socket.on('joinLobby', async (data: JoinLobbyData) => {
       try {
-        const { role, name } = data;
+        const { role, name, fromScene } = data;
 
         if (!isValidRole(role)) {
           socket.emit('error', { message: 'Invalid role' });
@@ -32,7 +46,8 @@ export default function registerLobbySocket(io: Server): void {
           socketId: socket.id,
           name: name || `User-${socket.id.substring(0, 6)}`,
           role,
-          roomId: 'lobby'
+          roomId: 'lobby',
+          inScene: !!fromScene
         });
         await user.save();
 
@@ -66,6 +81,12 @@ export default function registerLobbySocket(io: Server): void {
           }))
         });
 
+        // Players inside the 3D scene get the authoritative room snapshot so they
+        // render exactly what every other in-scene player sees.
+        if (fromScene) {
+          socket.emit('roomState', getSession().serialize());
+        }
+
         console.log(`✅ ${user.name} (${role}) joined lobby`);
       } catch (error) {
         console.error('Error joining lobby:', error);
@@ -98,6 +119,42 @@ export default function registerLobbySocket(io: Server): void {
       } catch (error) {
         console.error('Error activating level:', error);
         socket.emit('error', { message: 'Failed to activate level' });
+      }
+    });
+
+    // Handle a player interacting with a room object (authoritative).
+    socket.on('interact', (data: InteractData) => {
+      try {
+        if (!data || typeof data.objectId !== 'string' || typeof data.action !== 'string') {
+          socket.emit('notice', { message: 'Invalid interaction.' });
+          return;
+        }
+        const result = getSession().applyInteraction(data.objectId, data.action, data.payload);
+        emitApplyResult(io, result, socket.id);
+      } catch (error) {
+        console.error('Error handling interaction:', error);
+        socket.emit('notice', { message: 'Interaction failed.' });
+      }
+    });
+
+    // Handle an in-scene Director triggering a scripted event.
+    socket.on('directorAction', async (data: DirectorActionData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can trigger events' });
+          return;
+        }
+        if (!data || typeof data.eventId !== 'string') {
+          socket.emit('notice', { message: 'Invalid director event.' });
+          return;
+        }
+        const result = getSession().applyDirectorEvent(data.eventId);
+        emitApplyResult(io, result, socket.id);
+        console.log(`🎬 Director ${user.name} triggered "${data.eventId}"`);
+      } catch (error) {
+        console.error('Error handling director action:', error);
+        socket.emit('error', { message: 'Failed to trigger director event' });
       }
     });
 

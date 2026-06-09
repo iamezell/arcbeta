@@ -6,6 +6,10 @@ export class SocketClient {
   private onPlayerMoveCallback?: (data: any) => void;
   private onUserJoinedCallbacks: Array<(data: any) => void> = [];
   private onUserLeftCallbacks: Array<(data: any) => void> = [];
+  private onRoomStateCallback?: (data: any) => void;
+  private onStateChangedCallback?: (data: any) => void;
+  private onRevealCallback?: (data: any) => void;
+  private onNoticeCallback?: (data: any) => void;
 
   constructor() {
     // Connect to Socket.IO server
@@ -62,10 +66,29 @@ export class SocketClient {
         }
       });
     });
+
+    // ----- ARC room interaction protocol -----
+
+    this.socket.on('roomState', (data: any) => {
+      console.log('🏛️ Room state received:', data?.room?.name);
+      if (this.onRoomStateCallback) this.onRoomStateCallback(data);
+    });
+
+    this.socket.on('stateChanged', (data: any) => {
+      if (this.onStateChangedCallback) this.onStateChangedCallback(data);
+    });
+
+    this.socket.on('reveal', (data: any) => {
+      if (this.onRevealCallback) this.onRevealCallback(data);
+    });
+
+    this.socket.on('notice', (data: any) => {
+      if (this.onNoticeCallback) this.onNoticeCallback(data);
+    });
   }
 
-  public joinLobby(role: string, name: string): void {
-    this.socket.emit('joinLobby', { role, name });
+  public joinLobby(role: string, name: string, fromScene: boolean = false): void {
+    this.socket.emit('joinLobby', { role, name, fromScene });
   }
 
   public activateLevel(): void {
@@ -74,6 +97,32 @@ export class SocketClient {
 
   public sendPlayerMove(position: any, rotation: any): void {
     this.socket.emit('playerMove', { position, rotation });
+  }
+
+  // ----- ARC room interaction protocol -----
+
+  public interact(objectId: string, action: string, payload?: { code?: string }): void {
+    this.socket.emit('interact', { objectId, action, payload });
+  }
+
+  public directorAction(eventId: string): void {
+    this.socket.emit('directorAction', { eventId });
+  }
+
+  public onRoomState(callback: (data: any) => void): void {
+    this.onRoomStateCallback = callback;
+  }
+
+  public onStateChanged(callback: (data: any) => void): void {
+    this.onStateChangedCallback = callback;
+  }
+
+  public onReveal(callback: (data: any) => void): void {
+    this.onRevealCallback = callback;
+  }
+
+  public onNotice(callback: (data: any) => void): void {
+    this.onNoticeCallback = callback;
   }
 
   public onStartExperience(callback: () => void): void {

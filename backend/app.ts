@@ -3,6 +3,7 @@ import path from 'path';
 import cors from 'cors';
 import indexRouter from './routes/index';
 import lobbyRouter from './routes/lobby';
+import directorRouter from './routes/director';
 
 const app: Application = express();
 
@@ -19,6 +20,7 @@ app.use(express.static(path.join(__dirname, '../../public')));
 // Routes
 app.use('/', indexRouter);
 app.use('/lobby', lobbyRouter);
+app.use('/director', directorRouter);
 
 // Error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

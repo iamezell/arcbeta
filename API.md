@@ -56,6 +56,64 @@ GET https://localhost:443/scene?role=Director&name=Alice
 GET https://localhost:443/lobby/status
 ```
 
+> `waitingCount` is the number of users still on the lobby page who have not yet
+> been admitted into the running experience.
+
+---
+
+### POST /lobby/admit
+
+**Description**: Admit every player currently waiting on the lobby page into the
+already-running experience. Intended to be triggered by a Director's **Stream
+Deck** button (via an HTTP Request action) so players can join *after* the level
+has been activated.
+
+Each waiting player receives a `startExperience` event and is redirected into the
+3D scene. Players already in the scene are unaffected.
+
+**Authentication**: Requires the shared secret from the `STREAM_DECK_TOKEN`
+environment variable. Provide it using any one of:
+- Header `X-Admit-Token: <token>`
+- Header `Authorization: Bearer <token>`
+- JSON body `{ "token": "<token>" }`
+- Query string `?token=<token>`
+
+**Preconditions**: The experience must already be active (a Director has clicked
+"Activate Level"). Otherwise the request returns `409`.
+
+**Success Response**:
+```json
+{
+  "admitted": 2,
+  "players": [
+    { "name": "Bob", "role": "Actor" },
+    { "name": "Carol", "role": "Audience" }
+  ]
+}
+```
+
+**Error Responses**:
+- `401` – Invalid or missing admit token
+- `409` – Experience has not started yet
+- `503` – `STREAM_DECK_TOKEN` is not configured on the server
+
+**Usage** (what to put in the Stream Deck HTTP Request button):
+```bash
+curl -k -X POST https://localhost:443/lobby/admit \
+  -H "X-Admit-Token: your-secret-token"
+```
+
+> **Self-signed certificate note:** Many Stream Deck HTTP plugins (e.g. BarRaider
+> "Web Requests") reject the self-signed HTTPS certificate, so the request fails
+> silently even though `curl -k` works. Set `ADMIT_HTTP_PORT` in `.env` to enable
+> a plain-HTTP listener bound to `127.0.0.1`, then point the Stream Deck button at
+> the HTTP URL instead:
+>
+> ```bash
+> curl -X POST http://localhost:8080/lobby/admit \
+>   -H "X-Admit-Token: your-secret-token"
+> ```
+
 ---
 
 ### GET /lobby/user/:socketId
@@ -100,7 +158,8 @@ GET https://localhost:443/lobby/user/socket_id_123
 ```typescript
 {
   role: 'Director' | 'Actor' | 'Audience',
-  name: string
+  name: string,
+  fromScene?: boolean  // true when emitted from the 3D scene page (already in the experience)
 }
 ```
 
@@ -333,6 +392,7 @@ socket.on('error', (data) => {
   name: string (required),
   role: 'Director' | 'Actor' | 'Audience' (required),
   roomId: string (optional),
+  inScene: boolean (default: false),  // false = waiting in lobby, true = in the 3D scene
   createdAt: Date (default: now)
 }
 ```
@@ -425,7 +485,7 @@ new SocketClient()
 ```
 
 **Methods**:
-- `joinLobby(role: string, name: string)` - Join lobby
+- `joinLobby(role: string, name: string, fromScene?: boolean)` - Join lobby
 - `activateLevel()` - Activate level (Director only)
 - `sendPlayerMove(position, rotation)` - Send position update
 - `onStartExperience(callback)` - Register callback
