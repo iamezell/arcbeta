@@ -14,6 +14,7 @@ export class RoomUI {
   // Callbacks wired by the controller.
   public onKeypadSubmit: (code: string) => void = () => {};
   public onDirectorEvent: (eventId: string) => void = () => {};
+  public onRestart: () => void = () => {};
 
   constructor() {
     this.injectStyles();
@@ -110,6 +111,7 @@ export class RoomUI {
 
   showComplete(): void {
     this.completeBanner.style.display = 'flex';
+    document.exitPointerLock?.();
   }
 
   hideComplete(): void {
@@ -210,8 +212,14 @@ export class RoomUI {
   private makeCompleteBanner(): HTMLDivElement {
     const el = document.createElement('div');
     el.id = 'arc-complete';
-    el.innerHTML = `<div class="arc-complete-card"><h2>Experience Complete</h2></div>`;
+    el.innerHTML = `
+      <div class="arc-complete-card">
+        <h2>You Escaped!</h2>
+        <p class="arc-complete-sub">The exit door is open. Ready for another run?</p>
+        <button class="arc-complete-restart">Play Again</button>
+      </div>`;
     el.style.display = 'none';
+    el.querySelector('.arc-complete-restart')!.addEventListener('click', () => this.onRestart());
     document.body.appendChild(el);
     return el;
   }
@@ -293,6 +301,12 @@ export class RoomUI {
         background: #14301a; color: #b8ffcf; padding: 40px 60px; border-radius: 12px;
         border: 1px solid #2e7d4f; font: 'Segoe UI', sans-serif; text-align: center;
       }
+      .arc-complete-sub { margin: 0 0 20px; opacity: 0.85; }
+      .arc-complete-restart {
+        padding: 10px 24px; border: 0; border-radius: 8px; cursor: pointer;
+        background: #2e7d4f; color: #fff; font-size: 16px;
+      }
+      .arc-complete-restart:hover { background: #3a9960; }
     `;
     document.head.appendChild(style);
 

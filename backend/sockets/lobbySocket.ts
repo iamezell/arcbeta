@@ -137,6 +137,23 @@ export default function registerLobbySocket(io: Server): void {
       }
     });
 
+    // Restart the escape room after a player completes it.
+    socket.on('restartRoom', () => {
+      try {
+        const session = getSession();
+        if (!session.serialize().complete) {
+          socket.emit('notice', { message: 'The room is still in progress.' });
+          return;
+        }
+        const result = session.restartRoom();
+        emitApplyResult(io, result, socket.id);
+        console.log('🔄 Room restarted after completion');
+      } catch (error) {
+        console.error('Error restarting room:', error);
+        socket.emit('notice', { message: 'Failed to restart room.' });
+      }
+    });
+
     // Handle an in-scene Director triggering a scripted event.
     socket.on('directorAction', async (data: DirectorActionData) => {
       try {

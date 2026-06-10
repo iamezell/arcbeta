@@ -124,6 +124,7 @@ export interface StateChangePayload {
   changes: { id: string; state: string }[];
   flags: Record<string, boolean>;
   complete: boolean;
+  roomReset?: boolean;
   feedback?: string;
   audioCues?: string[];
   // Echoes the director event id when a change originates from one (client fx).

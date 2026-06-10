@@ -26,13 +26,15 @@ export function emitApplyResult(io: Server, result: ApplyResult, actingSocketId:
     result.complete ||
     !!result.feedback ||
     result.audioCues.length > 0 ||
-    !!result.directorEventId;
+    !!result.directorEventId ||
+    !!result.roomReset;
 
   if (hasBroadcast) {
     const payload: StateChangePayload = {
       changes: result.changes,
       flags: result.flags,
       complete: result.complete,
+      roomReset: result.roomReset,
       feedback: result.feedback,
       audioCues: result.audioCues,
       directorEventId: result.directorEventId,

@@ -109,6 +109,10 @@ export class SocketClient {
     this.socket.emit('directorAction', { eventId });
   }
 
+  public restartRoom(): void {
+    this.socket.emit('restartRoom');
+  }
+
   public onRoomState(callback: (data: any) => void): void {
     this.onRoomStateCallback = callback;
   }

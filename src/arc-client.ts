@@ -73,6 +73,10 @@ export class ARCClient {
       roomLight: this.hemisphereLight,
       role: this.role,
     });
+    this.roomController.onRoomRestart = () => {
+      this.fpsController?.resetToSpawn();
+      this.sceneWrapper.position.set(0, 0, 0);
+    };
   }
 
   private async setupLocalPlayerModel(): Promise<void> {

@@ -176,6 +176,14 @@ export class FPSController {
     }
   }
 
+  public resetToSpawn(): void {
+    const spawn = new THREE.Vector3(0, this.eyeHeight, 0);
+    this.camera.position.copy(spawn);
+    this.camera.rotation.set(0, 0, 0);
+    this.physicsManager.setPlayerPosition(spawn);
+    this.physicsManager.setPlayerRotation(new THREE.Euler(0, 0, 0));
+  }
+
   public getPosition(): THREE.Vector3 {
     return this.physicsManager.getPlayerPosition();
   }

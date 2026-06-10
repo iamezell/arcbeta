@@ -50,6 +50,7 @@ export interface StateChangePayload {
   changes: { id: string; state: string }[];
   flags: Record<string, boolean>;
   complete: boolean;
+  roomReset?: boolean;
   feedback?: string;
   audioCues?: string[];
   directorEventId?: string;

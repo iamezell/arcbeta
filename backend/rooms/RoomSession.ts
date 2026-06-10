@@ -17,6 +17,7 @@ export interface ApplyResult {
   changes: { id: string; state: string }[];
   flags: Record<string, boolean>;
   complete: boolean;
+  roomReset?: boolean;
   audioCues: string[];
   // Broadcast to everyone (shared progress / shared sfx).
   feedback?: string;
@@ -188,6 +189,19 @@ export class RoomSession {
     return result;
   }
 
+  // Reset the room after completion so players can run it again.
+  restartRoom(): ApplyResult {
+    this.reset();
+    const result = this.emptyResult();
+    result.ok = true;
+    result.complete = false;
+    result.roomReset = true;
+    result.changes = Array.from(this.states.entries()).map(([id, state]) => ({ id, state }));
+    result.feedback = 'The room resets. Find a way out again.';
+    result.audioCues.push('ambient_office_loop');
+    return result;
+  }
+
   // Director-triggered scripted event (in-scene Director role or Stream Deck HTTP).
   applyDirectorEvent(eventId: string): ApplyResult {
     const result = this.emptyResult();
@@ -196,7 +210,11 @@ export class RoomSession {
       result.notice = `Unknown director event: ${eventId}`;
       return result;
     }
-    if (event.effect.resetRoom) this.reset();
+    if (event.effect.resetRoom) {
+      this.reset();
+      result.complete = this.complete;
+      result.roomReset = true;
+    }
     this.applyEffect(event.effect, null, result);
     result.ok = true;
     result.flags = this.flags;

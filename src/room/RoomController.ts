@@ -23,6 +23,8 @@ export class RoomController {
   private flags: Record<string, boolean> = {};
   private complete = false;
 
+  public onRoomRestart: () => void = () => {};
+
   private raycaster = new THREE.Raycaster();
   private targetObjectId: string | null = null;
   private pendingKeypadObjectId: string | null = null;
@@ -56,7 +58,7 @@ export class RoomController {
   private wireInput(): void {
     document.addEventListener('keydown', (e) => {
       if (e.code !== 'KeyE') return;
-      if (this.ui.isBlocking()) return;
+      if (this.complete || this.ui.isBlocking()) return;
       this.tryInteract();
     });
   }
@@ -69,6 +71,7 @@ export class RoomController {
       }
     };
     this.ui.onDirectorEvent = (eventId: string) => this.socket.directorAction(eventId);
+    this.ui.onRestart = () => this.socket.restartRoom();
   }
 
   private onRoomState(data: RoomStatePayload): void {
@@ -94,7 +97,11 @@ export class RoomController {
     if (data.complete && !this.complete) {
       this.complete = true;
       this.ui.showComplete();
+    } else if (!data.complete && this.complete) {
+      this.complete = false;
+      this.ui.hideComplete();
     }
+    if (data.roomReset) this.onRoomRestart();
   }
 
   // Pick the first interaction available in the object's current state.
@@ -123,7 +130,7 @@ export class RoomController {
 
   // Called every frame by the host render loop: raycast for the focused object.
   update(): void {
-    if (this.ui.isBlocking()) {
+    if (this.complete || this.ui.isBlocking()) {
       this.renderer.highlight(null);
       this.ui.hidePrompt();
       return;
