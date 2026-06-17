@@ -184,6 +184,16 @@ export class FPSController {
     this.physicsManager.setPlayerRotation(new THREE.Euler(0, 0, 0));
   }
 
+  // Move the player to a specific spot on the floor with an optional heading.
+  // Used by the show system to drop players into a scene's spawn position.
+  public setPosition(x: number, z: number, yaw: number = 0): void {
+    this.camera.rotation.set(0, yaw, 0);
+    // Physics body tracks foot position (y=0 on the floor); camera sits at eye height.
+    this.physicsManager.setPlayerPosition(new THREE.Vector3(x, 0, z));
+    this.camera.position.set(x, this.eyeHeight, z);
+    this.physicsManager.setPlayerRotation(new THREE.Euler(0, 0, 0));
+  }
+
   public getPosition(): THREE.Vector3 {
     return this.physicsManager.getPlayerPosition();
   }

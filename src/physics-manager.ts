@@ -66,13 +66,19 @@ export class PhysicsManager {
 
   private createGround(): void {
     if (!this.world) return;
-    
-    // Create a large ground plane
+
+    // Sized to cover Act 1's storm road (mud plane is 90×180 centred at z=-40,
+    // gate/NPCs around z=-75). The old 100×100 slab at the origin ended at z=-50,
+    // so players fell through the visible ground when walking toward the gate lights.
+    const halfX = 50;
+    const halfZ = 95;
+    const centerZ = -40;
+
     const groundBodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(0, -0.5, 0);
+      .setTranslation(0, -0.5, centerZ);
     this.groundBody = this.world.createRigidBody(groundBodyDesc);
-    
-    const groundColliderDesc = RAPIER.ColliderDesc.cuboid(50, 0.5, 50);
+
+    const groundColliderDesc = RAPIER.ColliderDesc.cuboid(halfX, 0.5, halfZ);
     this.groundCollider = this.world.createCollider(groundColliderDesc, this.groundBody);
   }
 

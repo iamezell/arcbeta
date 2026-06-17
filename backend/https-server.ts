@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import app from './app';
 import { Server } from 'socket.io';
 import registerLobbySocket from './sockets/lobbySocket';
+import registerNPCSocket from './sockets/npcSocket';
 import connectDB from './config/db';
 
 // Load environment variables
@@ -32,6 +33,7 @@ const io = new Server(server, {
 
 // Register socket handlers
 registerLobbySocket(io);
+registerNPCSocket(io);
 
 // Make the Socket.IO instance available to Express route handlers
 // (e.g. the Stream Deck admit endpoint needs to emit to clients)

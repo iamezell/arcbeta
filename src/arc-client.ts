@@ -4,6 +4,11 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FPSController } from './fps-controller';
 import { SocketClient } from './socket-client';
 import { RoomController } from './room/RoomController';
+import { ShowController } from './show/ShowController';
+import { ShowDirectorUI } from './show/ShowDirectorUI';
+import { SceneId } from './show/scenes';
+import { CueManager } from './npc/CueManager';
+import { NPCDirectorPanel } from './npc/NPCDirectorPanel';
 
 export class ARCClient {
   private scene: THREE.Scene;
@@ -17,6 +22,7 @@ export class ARCClient {
   private playerName: string;
   private remotePlayers: Map<string, THREE.Group> = new Map();
   private remotePlayerPhysics: Map<string, { position: THREE.Vector3; rotation: THREE.Euler; velocity: THREE.Vector3 }> = new Map();
+  private pendingRemoteAdds = new Set<string>();
   private lastUpdateTime = 0;
   private updateInterval = 50; // 20 updates per second
   private physicsUpdateInterval = 16; // 60 FPS for physics
@@ -24,6 +30,10 @@ export class ARCClient {
   private vrThumbstickDeadzone = 0.4;
   private hemisphereLight!: THREE.HemisphereLight;
   private roomController: RoomController | null = null;
+  private showController: ShowController | null = null;
+  private showDirectorUI: ShowDirectorUI | null = null;
+  private cueManager: CueManager | null = null;
+  private npcDirectorPanel: NPCDirectorPanel | null = null;
 
   constructor(role: string, playerName: string) {
     this.role = role;
@@ -60,6 +70,8 @@ export class ARCClient {
     this.setupFPSController();
     this.setupLocalPlayerModel();
     this.setupRoom();
+    this.setupShow();
+    this.setupNPCs();
     this.setupWindowResize();
     this.animate();
   }
@@ -79,6 +91,80 @@ export class ARCClient {
     };
   }
 
+  private setupShow(): void {
+    // Build the theatrical show layer. The server is authoritative for which
+    // scene is active; this client just renders it and runs cues.
+    this.showController = new ShowController({
+      scene: this.scene,
+      parent: this.sceneWrapper,
+      role: this.role,
+      onTeleport: (spawn) => {
+        this.fpsController?.setPosition(spawn.x, spawn.z, spawn.yaw);
+        // Re-centre the VR world shift so headset locomotion stays correct.
+        this.sceneWrapper.position.set(0, 0, 0);
+      },
+    });
+
+    // Everyone starts in the loading zone until the server says otherwise.
+    this.showController.loadPreShowScene();
+
+    // Director gets the stage control panel.
+    if (this.role === 'Director') {
+      this.showDirectorUI = new ShowDirectorUI();
+      this.showDirectorUI.onStartAct = (sceneId, mode) => {
+        this.socketClient.startAct(sceneId, mode);
+      };
+      this.showDirectorUI.onCue = (cue) => {
+        this.socketClient.showCue(cue);
+      };
+      this.showDirectorUI.setCurrentScene(this.showController.getCurrentScene());
+    }
+
+    // Every client hides/shows NPCs with the active act (CueManager wired in setupNPCs).
+    this.showController.onSceneChanged = (scene: SceneId) => {
+      this.showDirectorUI?.setCurrentScene(scene);
+      this.cueManager?.setActVisible(scene === 'ACT_1_STORM_ROAD');
+    };
+
+    // Server-driven sync: initial snapshot (incl. late joiners), live
+    // transitions, and one-shot cues.
+    this.socketClient.onShowState((data: { currentScene: SceneId }) => {
+      this.showController?.applyInitialScene(data.currentScene);
+    });
+    this.socketClient.onSceneTransition((data: { currentScene: SceneId; mode: any }) => {
+      this.showController?.syncSceneTransition(data);
+    });
+    this.socketClient.onShowCue((data: { cue: any }) => {
+      this.showController?.handleCue(data.cue);
+    });
+  }
+
+  private setupNPCs(): void {
+    // Spatial-audio listener follows the camera (the player's head).
+    const listener = new THREE.AudioListener();
+    this.camera.add(listener);
+
+    // The CueManager owns the NPC actors and applies authoritative server
+    // updates. NPCs live in the world group so VR locomotion applies.
+    this.cueManager = new CueManager({
+      parent: this.sceneWrapper,
+      listener,
+      socket: this.socketClient,
+      role: this.role,
+      playerName: this.playerName,
+    });
+
+    // Director gets the debug control panel; the audience stays immersive.
+    if (this.role === 'Director') {
+      this.npcDirectorPanel = new NPCDirectorPanel(this.cueManager);
+    }
+
+    // Hide NPCs until Act 1; show immediately if we already restored into Act 1.
+    this.cueManager.setActVisible(
+      this.showController?.getCurrentScene() === 'ACT_1_STORM_ROAD'
+    );
+  }
+
   private async setupLocalPlayerModel(): Promise<void> {
     // Load the local player's avatar model based on their role
     try {
@@ -90,39 +176,22 @@ export class ARCClient {
   }
 
   private setupScene(): void {
-    // All environment content goes in sceneWrapper so we can shift the world for VR locomotion
+    // All environment content goes in sceneWrapper so we can shift the world for VR locomotion.
     const wrap = this.sceneWrapper;
 
-    // Lighting (hemisphere light is dimmable by the Director via room_light state)
-    const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+    // The theatrical scenes start in a black void; the ShowController owns the
+    // per-scene lighting and geometry. We keep only a very dim hemisphere fill
+    // (also handed to RoomController for its optional room_light toggle) so the
+    // void isn't pure black before a scene's own lights are added.
+    this.scene.background = new THREE.Color(0x000000);
+
+    const hemisphereLight = new THREE.HemisphereLight(0x334466, 0x111122, 0.15);
     hemisphereLight.position.set(0, 20, 0);
     wrap.add(hemisphereLight);
     this.hemisphereLight = hemisphereLight;
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(5, 10, 5);
-    directionalLight.castShadow = true;
-    wrap.add(directionalLight);
-
-    // Ground
-    const groundGeometry = new THREE.PlaneGeometry(100, 100);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: 0x808080,
-      roughness: 0.8,
-      metalness: 0.2
-    });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    wrap.add(ground);
-
-    // Grid helper
-    const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x000000);
-    gridHelper.material.opacity = 0.2;
-    gridHelper.material.transparent = true;
-    wrap.add(gridHelper);
-
-    // Interactive room geometry is built by RoomController from server data.
+    // Scene geometry (loading zone, Act 1) is built by ShowController; interactive
+    // room geometry is built by RoomController from server data when present.
   }
 
   private setupFPSController(): void {
@@ -139,7 +208,12 @@ export class ARCClient {
       this.updateRemotePlayer(data.id, data.position, data.rotation);
     });
 
-    // Handle user joined
+    // Full sync of who is in the 3D scene (avoids duplicate avatars).
+    this.socketClient.onLobbyState((data: { users: Array<{ id: string; name: string; role: string; inScene?: boolean }> }) => {
+      this.syncInScenePlayers(data.users);
+    });
+
+    // Handle user joined (in-scene only — filtered in SocketClient)
     this.socketClient.onUserJoined((data: any) => {
       if (data.id === this.socketClient.getSocketId()) return;
       this.addRemotePlayer(data.id, data.name, data.role).catch(err => {
@@ -153,18 +227,37 @@ export class ARCClient {
     });
   }
 
+  // Replace the remote-player set with the authoritative in-scene list.
+  private syncInScenePlayers(users: Array<{ id: string; name: string; role: string; inScene?: boolean }>): void {
+    const selfId = this.socketClient.getSocketId();
+    const inScene = users.filter((u) => u.inScene === true && u.id !== selfId);
+    const ids = new Set(inScene.map((u) => u.id));
+
+    for (const id of Array.from(this.remotePlayers.keys())) {
+      if (!ids.has(id)) this.removeRemotePlayer(id);
+    }
+
+    for (const u of inScene) {
+      this.addRemotePlayer(u.id, u.name, u.role).catch((err) => {
+        console.error(`Failed to sync remote player ${u.name}:`, err);
+      });
+    }
+  }
+
   private async addRemotePlayer(id: string, name: string, role: string): Promise<void> {
-    if (this.remotePlayers.has(id)) return;
+    if (this.remotePlayers.has(id) || this.pendingRemoteAdds.has(id)) return;
+    this.pendingRemoteAdds.add(id);
 
-    const playerGroup = new THREE.Group();
-
-    // Try to load model based on role
-    await this.loadPlayerModel(playerGroup, role, name);
-
-    this.sceneWrapper.add(playerGroup);
-    this.remotePlayers.set(id, playerGroup);
-    playerGroup.position.set(0, 1.6, 0);
-    console.log(`➕ Added remote player: ${name} (${role})`);
+    try {
+      const playerGroup = new THREE.Group();
+      await this.loadPlayerModel(playerGroup, role, name);
+      this.sceneWrapper.add(playerGroup);
+      this.remotePlayers.set(id, playerGroup);
+      playerGroup.position.set(0, 1.6, 0);
+      console.log(`➕ Added remote player: ${name} (${role})`);
+    } finally {
+      this.pendingRemoteAdds.delete(id);
+    }
   }
 
   private async loadPlayerModel(playerGroup: THREE.Group | null, role: string, name: string): Promise<void> {
@@ -229,6 +322,7 @@ export class ARCClient {
   }
 
   private removeRemotePlayer(id: string): void {
+    this.pendingRemoteAdds.delete(id);
     const player = this.remotePlayers.get(id);
     if (player) {
       this.sceneWrapper.remove(player);
@@ -278,6 +372,12 @@ export class ARCClient {
 
       // Interpolate remote players for smooth movement
       this.interpolateRemotePlayers(delta);
+
+      // Advance theatrical show effects (rain, lightning, fades)
+      this.showController?.update(delta);
+
+      // Advance NPC actors (talking indicators, etc.)
+      this.cueManager?.update(delta);
 
       // Raycast for interactable room objects (desktop focus for the MVP)
       if (this.roomController && !inVR) {

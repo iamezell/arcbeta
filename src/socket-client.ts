@@ -6,10 +6,23 @@ export class SocketClient {
   private onPlayerMoveCallback?: (data: any) => void;
   private onUserJoinedCallbacks: Array<(data: any) => void> = [];
   private onUserLeftCallbacks: Array<(data: any) => void> = [];
+  private onLobbyStateCallback?: (data: any) => void;
   private onRoomStateCallback?: (data: any) => void;
   private onStateChangedCallback?: (data: any) => void;
   private onRevealCallback?: (data: any) => void;
   private onNoticeCallback?: (data: any) => void;
+  private onShowStateCallback?: (data: any) => void;
+  private onSceneTransitionCallback?: (data: any) => void;
+  private onShowCueCallback?: (data: any) => void;
+  private onNpcRosterCallback?: (data: any) => void;
+  private onNpcStateCallback?: (data: any) => void;
+  private onNpcCueCallback?: (data: any) => void;
+  private onNpcConversationCallback?: (data: any) => void;
+  private onNpcSubtitleCallback?: (data: any) => void;
+  private onNpcRealtimeSessionCallback?: (data: any) => void;
+  private onNpcDetailCallback?: (data: any) => void;
+  // Cached so a roster that arrives before CueManager wires its listener is not lost.
+  private lastNpcRoster: any = null;
 
   constructor() {
     // Connect to Socket.IO server
@@ -49,6 +62,7 @@ export class SocketClient {
 
     this.socket.on('userJoined', (data: any) => {
       console.log('👤 User joined:', data.name, data.role);
+      if (data.inScene === false) return;
       this.onUserJoinedCallbacks.forEach(cb => cb(data));
     });
 
@@ -59,7 +73,11 @@ export class SocketClient {
 
     this.socket.on('lobbyState', (data: any) => {
       console.log('📋 Lobby state:', data.users);
-      // Update UI with current lobby users
+      if (this.onLobbyStateCallback) {
+        this.onLobbyStateCallback(data);
+        return;
+      }
+      // Fallback: additive join for lobby HTML page.
       data.users.forEach((user: any) => {
         if (user.id !== this.socket.id) {
           this.onUserJoinedCallbacks.forEach(cb => cb(user));
@@ -84,6 +102,57 @@ export class SocketClient {
 
     this.socket.on('notice', (data: any) => {
       if (this.onNoticeCallback) this.onNoticeCallback(data);
+    });
+
+    // ----- ARC theatrical show protocol -----
+
+    // Initial scene snapshot for this client (also drives late-joiner sync).
+    this.socket.on('showState', (data: any) => {
+      console.log('🎭 Show state received:', data?.currentScene);
+      if (this.onShowStateCallback) this.onShowStateCallback(data);
+    });
+
+    // Synchronized scene transition broadcast to everyone.
+    this.socket.on('sceneTransition', (data: any) => {
+      console.log('🎬 Scene transition:', data?.currentScene, data?.mode);
+      if (this.onSceneTransitionCallback) this.onSceneTransitionCallback(data);
+    });
+
+    // One-shot stage cue (thunder / lightning / rain / gate light).
+    this.socket.on('showCue', (data: any) => {
+      if (this.onShowCueCallback) this.onShowCueCallback(data);
+    });
+
+    // ----- ARC NPC system protocol -----
+
+    this.socket.on('npc:roster', (data: any) => {
+      console.log('🤖 NPC roster received:', data?.npcs?.length, 'NPCs');
+      this.lastNpcRoster = data;
+      if (this.onNpcRosterCallback) this.onNpcRosterCallback(data);
+    });
+
+    this.socket.on('npc:state', (data: any) => {
+      if (this.onNpcStateCallback) this.onNpcStateCallback(data);
+    });
+
+    this.socket.on('npc:cue', (data: any) => {
+      if (this.onNpcCueCallback) this.onNpcCueCallback(data);
+    });
+
+    this.socket.on('npc:conversation', (data: any) => {
+      if (this.onNpcConversationCallback) this.onNpcConversationCallback(data);
+    });
+
+    this.socket.on('npc:subtitle', (data: any) => {
+      if (this.onNpcSubtitleCallback) this.onNpcSubtitleCallback(data);
+    });
+
+    this.socket.on('npc:realtimeSession', (data: any) => {
+      if (this.onNpcRealtimeSessionCallback) this.onNpcRealtimeSessionCallback(data);
+    });
+
+    this.socket.on('npc:detail', (data: any) => {
+      if (this.onNpcDetailCallback) this.onNpcDetailCallback(data);
     });
   }
 
@@ -111,6 +180,79 @@ export class SocketClient {
 
   public restartRoom(): void {
     this.socket.emit('restartRoom');
+  }
+
+  // ----- ARC theatrical show protocol -----
+
+  public startAct(sceneId: string, mode: string): void {
+    this.socket.emit('startAct', { sceneId, mode });
+  }
+
+  public showCue(cue: string): void {
+    this.socket.emit('showCue', { cue });
+  }
+
+  public onShowState(callback: (data: any) => void): void {
+    this.onShowStateCallback = callback;
+  }
+
+  public onSceneTransition(callback: (data: any) => void): void {
+    this.onSceneTransitionCallback = callback;
+  }
+
+  public onShowCue(callback: (data: any) => void): void {
+    this.onShowCueCallback = callback;
+  }
+
+  // ----- ARC NPC system protocol -----
+
+  public npcCue(npcId: string, cue: string, payload?: { socketId?: string }): void {
+    this.socket.emit('npc:cue', { npcId, cue, payload });
+  }
+
+  public requestRealtimeSession(npcId: string): void {
+    this.socket.emit('npc:requestRealtimeSession', { npcId });
+  }
+
+  public npcTranscript(npcId: string, speaker: string, text: string): void {
+    this.socket.emit('npc:transcript', { npcId, speaker, text });
+  }
+
+  public requestNpcDetail(npcId: string): void {
+    this.socket.emit('npc:requestDetail', { npcId });
+  }
+
+  public requestNpcRoster(): void {
+    this.socket.emit('npc:requestRoster');
+  }
+
+  public onNpcRoster(callback: (data: any) => void): void {
+    this.onNpcRosterCallback = callback;
+    if (this.lastNpcRoster) callback(this.lastNpcRoster);
+  }
+
+  public onNpcState(callback: (data: any) => void): void {
+    this.onNpcStateCallback = callback;
+  }
+
+  public onNpcCue(callback: (data: any) => void): void {
+    this.onNpcCueCallback = callback;
+  }
+
+  public onNpcConversation(callback: (data: any) => void): void {
+    this.onNpcConversationCallback = callback;
+  }
+
+  public onNpcSubtitle(callback: (data: any) => void): void {
+    this.onNpcSubtitleCallback = callback;
+  }
+
+  public onNpcRealtimeSession(callback: (data: any) => void): void {
+    this.onNpcRealtimeSessionCallback = callback;
+  }
+
+  public onNpcDetail(callback: (data: any) => void): void {
+    this.onNpcDetailCallback = callback;
   }
 
   public onRoomState(callback: (data: any) => void): void {
@@ -143,6 +285,10 @@ export class SocketClient {
 
   public onUserLeft(callback: (data: any) => void): void {
     this.onUserLeftCallbacks.push(callback);
+  }
+
+  public onLobbyState(callback: (data: any) => void): void {
+    this.onLobbyStateCallback = callback;
   }
 
   public getSocketId(): string {

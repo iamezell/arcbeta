@@ -1,0 +1,33 @@
+Project: ARC (Audio/Alternate Reality Construct)
+
+Core Philosophy:
+- Live interactive theater.
+- Director controls pacing.
+- AI are actors, not directors.
+- Human actors can replace AI actors.
+- Low friction web-first architecture.
+
+Tech Stack:
+- TypeScript
+- Three.js
+- WebXR
+- Node.js
+- WebSockets
+- WebRTC
+- React
+- OpenAI Realtime API
+- ElevenLabs
+- Stream Deck integration
+
+Coding Style:
+- Prefer composition over inheritance.
+- Strong TypeScript typing.
+- Small focused classes.
+- Fail gracefully.
+- Systems should degrade rather than crash.
+
+Architecture:
+- Cue driven.
+- State machines.
+- Human/AI actor abstraction.
+- NPC memory is scene-local.

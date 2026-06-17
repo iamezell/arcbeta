@@ -3,6 +3,16 @@ import User from '../models/User';
 import Room from '../models/Room';
 import { isValidRole, UserRole } from '../utils/roles';
 import { getSession, emitApplyResult } from '../rooms/sessionManager';
+import {
+  getShowState,
+  SceneId,
+  TransitionMode,
+  ShowCue,
+  VALID_SCENES,
+  VALID_MODES,
+  VALID_CUES,
+} from '../show/showState';
+import { getDirectorController } from '../npc/DirectorController';
 
 interface PlayerMoveData {
   position: { x: number; y: number; z: number };
@@ -27,6 +37,15 @@ interface DirectorActionData {
   eventId: string;
 }
 
+interface StartActData {
+  sceneId: SceneId;
+  mode: TransitionMode;
+}
+
+interface ShowCueData {
+  cue: ShowCue;
+}
+
 export default function registerLobbySocket(io: Server): void {
   io.on('connection', (socket: Socket) => {
     console.log(`🔌 User connected: ${socket.id}`);
@@ -41,24 +60,38 @@ export default function registerLobbySocket(io: Server): void {
           return;
         }
 
-        // Create user in database
-        const user = new User({
-          socketId: socket.id,
-          name: name || `User-${socket.id.substring(0, 6)}`,
-          role,
-          roomId: 'lobby',
-          inScene: !!fromScene
-        });
-        await user.save();
+        // Upsert so reconnect / duplicate joinLobby never creates twin User rows.
+        const user = await User.findOneAndUpdate(
+          { socketId: socket.id },
+          {
+            socketId: socket.id,
+            name: name || `User-${socket.id.substring(0, 6)}`,
+            role,
+            roomId: 'lobby',
+            inScene: !!fromScene,
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+
+        // Entering the 3D scene: drop any lobby-page socket still listed under the
+        // same display name so we don't render two avatars for one person.
+        if (fromScene) {
+          await User.deleteMany({
+            name: user.name,
+            inScene: false,
+            socketId: { $ne: socket.id },
+          });
+        }
 
         // Join lobby room
         socket.join('lobby');
 
-        // Notify all users in lobby
-        io.to('lobby').emit('userJoined', {
+        // Notify everyone else (not the joiner — they get lobbyState below).
+        socket.broadcast.to('lobby').emit('userJoined', {
           id: socket.id,
           name: user.name,
-          role: user.role
+          role: user.role,
+          inScene: user.inScene,
         });
 
         // Clean up any stale lobby users whose sockets are no longer connected
@@ -77,14 +110,22 @@ export default function registerLobbySocket(io: Server): void {
           users: lobbyUsers.map(u => ({
             id: u.socketId,
             name: u.name,
-            role: u.role
+            role: u.role,
+            inScene: u.inScene,
           }))
         });
 
-        // Players inside the 3D scene get the authoritative room snapshot so they
-        // render exactly what every other in-scene player sees.
+        // Players inside the 3D scene get the authoritative show state so they
+        // render the same theatrical moment as everyone else. Late joiners who
+        // arrive after Act 1 has started are dropped straight into Act 1.
         if (fromScene) {
-          socket.emit('roomState', getSession().serialize());
+          socket.emit('showState', getShowState().serialize());
+          // Re-send NPC roster once the client has finished booting its scene page.
+          getDirectorController().broadcastRoster(socket);
+          // NOTE: the escape-room greybox (`roomState`) is intentionally not
+          // auto-loaded here so it doesn't clutter the theatrical scenes. The
+          // `interact` / `directorAction` infrastructure remains available for
+          // wiring an escape-room act in later.
         }
 
         console.log(`✅ ${user.name} (${role}) joined lobby`);
@@ -172,6 +213,53 @@ export default function registerLobbySocket(io: Server): void {
       } catch (error) {
         console.error('Error handling director action:', error);
         socket.emit('error', { message: 'Failed to trigger director event' });
+      }
+    });
+
+    // Director starts a theatrical scene (e.g. Act 1). The server is the source
+    // of truth for the active scene; it broadcasts a synchronized transition so
+    // every client switches at the same time.
+    socket.on('startAct', async (data: StartActData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can start an act' });
+          return;
+        }
+        const sceneId = data?.sceneId;
+        const mode = data?.mode;
+        if (!sceneId || !VALID_SCENES.includes(sceneId)) {
+          socket.emit('notice', { message: 'Unknown scene.' });
+          return;
+        }
+        const safeMode: TransitionMode = mode && VALID_MODES.includes(mode) ? mode : 'instant';
+        const payload = getShowState().startScene(sceneId, safeMode);
+        io.to('lobby').emit('sceneTransition', payload);
+        console.log(`🎭 Director ${user.name} started ${sceneId} (${safeMode})`);
+      } catch (error) {
+        console.error('Error starting act:', error);
+        socket.emit('error', { message: 'Failed to start act' });
+      }
+    });
+
+    // Director fires a one-shot stage cue (thunder, lightning, rain, gate light).
+    socket.on('showCue', async (data: ShowCueData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can trigger cues' });
+          return;
+        }
+        const cue = data?.cue;
+        if (!cue || !VALID_CUES.includes(cue)) {
+          socket.emit('notice', { message: 'Unknown cue.' });
+          return;
+        }
+        io.to('lobby').emit('showCue', { cue });
+        console.log(`⚡ Director ${user.name} fired cue "${cue}"`);
+      } catch (error) {
+        console.error('Error firing show cue:', error);
+        socket.emit('error', { message: 'Failed to fire cue' });
       }
     });
 
