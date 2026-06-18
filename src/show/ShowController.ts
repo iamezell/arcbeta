@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { AudioHooks } from '../room/AudioHooks';
+import { AudioHooks } from '../audio/AudioHooksBridge';
 import {
   SceneId,
   TransitionMode,
@@ -10,6 +10,12 @@ import {
   PRE_SHOW_SPAWN,
   ACT_1_SPAWN,
 } from './scenes';
+import {
+  LostInTheStormCues,
+  STORM_AUDIO_CUE_IDS,
+  StormAudioCueId,
+  dispatchStormAudioCue,
+} from '../audio/LostInTheStormCues';
 
 // Drives the theatrical ARC flow on the client: builds the pre-show loading
 // zone and Act 1 storm road from placeholder geometry, performs synchronized
@@ -24,6 +30,8 @@ interface ShowControllerOpts {
   scene: THREE.Scene;
   parent: THREE.Object3D;
   role: string;
+  audio: AudioHooks;
+  stormCues: LostInTheStormCues;
   // Move the local player to a spawn point (x/z on the floor, yaw heading).
   onTeleport: (spawn: { x: number; z: number; yaw: number }) => void;
 }
@@ -40,6 +48,7 @@ export class ShowController {
   private role: string;
   private onTeleport: (spawn: { x: number; z: number; yaw: number }) => void;
   private audio: AudioHooks;
+  private stormCues: LostInTheStormCues;
 
   private preShowGroup: THREE.Group | null = null;
   private act1Group: THREE.Group | null = null;
@@ -74,7 +83,8 @@ export class ShowController {
     this.scene = opts.scene;
     this.role = opts.role;
     this.onTeleport = opts.onTeleport;
-    this.audio = new AudioHooks();
+    this.audio = opts.audio;
+    this.stormCues = opts.stormCues;
 
     this.root = new THREE.Group();
     this.root.name = 'show-root';
@@ -192,8 +202,12 @@ export class ShowController {
     step(6400, () => this.onTeleport(ACT_1_SPAWN));
   }
 
-  // One-shot stage cue from the Director.
+  // One-shot stage cue from the Director (visual + audio).
   handleCue(cue: ShowCue): void {
+    if ((STORM_AUDIO_CUE_IDS as readonly string[]).includes(cue)) {
+      void dispatchStormAudioCue(this.stormCues, cue as StormAudioCueId);
+      return;
+    }
     switch (cue) {
       case 'thunder':
         this.audio.play('thunder_clap');

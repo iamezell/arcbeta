@@ -105,7 +105,12 @@ export class NPCDirectorPanel {
       opt.textContent = `${s.name} (${s.isAI ? 'AI' : 'HUMAN'})`;
       this.npcSelect.appendChild(opt);
     }
-    if (prev && snaps.some((s) => s.id === prev)) this.npcSelect.value = prev;
+    if (prev && snaps.some((s) => s.id === prev)) {
+      this.npcSelect.value = prev;
+    } else {
+      const firstAi = snaps.find((s) => s.isAI);
+      if (firstAi) this.npcSelect.value = firstAi.id;
+    }
 
     const sel = snaps.find((s) => s.id === this.selectedNpc());
     if (sel) {

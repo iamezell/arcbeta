@@ -8,11 +8,50 @@
 
 export type SceneId = 'PRE_SHOW' | 'ACT_1_STORM_ROAD';
 export type TransitionMode = 'instant' | 'assemble';
-export type ShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+
+/** Visual stage cues (client-side effects). */
+export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+
+/** Storm audio cues (Lost in the Storm cue pack). */
+export type StormAudioCue =
+  | 'stormStart'
+  | 'stormStop'
+  | 'thunderDistant'
+  | 'thunderClose'
+  | 'wolfLeft'
+  | 'wolfRight'
+  | 'wolfBehind'
+  | 'werewolfCircle'
+  | 'branchSnap'
+  | 'distantScream'
+  | 'churchBell';
+
+export type ShowCue = VisualShowCue | StormAudioCue;
 
 export const VALID_SCENES: SceneId[] = ['PRE_SHOW', 'ACT_1_STORM_ROAD'];
 export const VALID_MODES: TransitionMode[] = ['instant', 'assemble'];
-export const VALID_CUES: ShowCue[] = ['thunder', 'lightning', 'rainUp', 'gateLight'];
+
+export const STORM_AUDIO_CUES: StormAudioCue[] = [
+  'stormStart',
+  'stormStop',
+  'thunderDistant',
+  'thunderClose',
+  'wolfLeft',
+  'wolfRight',
+  'wolfBehind',
+  'werewolfCircle',
+  'branchSnap',
+  'distantScream',
+  'churchBell',
+];
+
+export const VALID_CUES: ShowCue[] = [
+  'thunder',
+  'lightning',
+  'rainUp',
+  'gateLight',
+  ...STORM_AUDIO_CUES,
+];
 
 export interface ShowStatePayload {
   currentScene: SceneId;

@@ -2,10 +2,13 @@ import { NPCActor, NPCActorOpts } from './NPCActor';
 import { ConversationManager, ConversationClient } from './ConversationManager';
 import { NPCStateMachine } from './NPCStateMachine';
 import { ActorKind, DirectorCue } from './types';
+import { WebRTCVoicePipeline } from '../audio/WebRTCVoicePipeline';
+import * as THREE from 'three';
 
 export interface AIActorOpts extends NPCActorOpts {
   conversation: ConversationManager;
   playerName: string;
+  voicePipeline: WebRTCVoicePipeline;
 }
 
 // Short per-cue directives (no secret knowledge) used to nudge the already-
@@ -34,6 +37,7 @@ export class AIActor extends NPCActor implements ConversationClient {
   playerName: string;
 
   private conversation: ConversationManager;
+  private voicePipeline: WebRTCVoicePipeline;
   private conversationLive = false;
   private conversationStarting = false;
   private lastScriptedLine: string | undefined;
@@ -41,6 +45,7 @@ export class AIActor extends NPCActor implements ConversationClient {
   constructor(opts: AIActorOpts) {
     super(opts);
     this.conversation = opts.conversation;
+    this.voicePipeline = opts.voicePipeline;
     this.npcId = opts.snapshot.id;
     this.playerName = opts.playerName;
   }
@@ -76,11 +81,14 @@ export class AIActor extends NPCActor implements ConversationClient {
       return;
     }
     this.conversationStarting = true;
+    console.log(`[${this.npcId}] enabling live conversation…`);
     try {
       await this.unlockAudio();
       const ok = await this.conversation.start(this);
       this.conversationLive = ok;
-      if (!ok) {
+      if (ok) {
+        console.log(`[${this.npcId}] live conversation active`);
+      } else {
         console.warn(`[${this.npcId}] live conversation unavailable; using scripted dialogue.`);
         if (this.lastScriptedLine) this.performLine(this.lastScriptedLine);
       }
@@ -91,6 +99,7 @@ export class AIActor extends NPCActor implements ConversationClient {
 
   disableConversation(): void {
     if (!this.conversationLive && !this.conversation.isActive(this.npcId)) return;
+    this.voicePipeline.detach();
     this.conversation.stop(this.npcId);
     this.conversationLive = false;
   }
@@ -118,6 +127,16 @@ export class AIActor extends NPCActor implements ConversationClient {
   }
 
   // ---------- ConversationClient ----------
+
+  attachAudioStream(_stream: MediaStream, playbackElement: HTMLAudioElement, track?: MediaStreamTrack): void {
+    this.voicePipeline.attachStream(playbackElement, _stream, this.npcId, track);
+    this.voicePipeline.setNpcPositionProvider(() => {
+      const pos = new THREE.Vector3();
+      this.group.getWorldPosition(pos);
+      pos.y += 1.55;
+      return pos;
+    });
+  }
 
   onNpcLine(text: string): void {
     this.onSubtitle(this.npcId, 'npc', text);

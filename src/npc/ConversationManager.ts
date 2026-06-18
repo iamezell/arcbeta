@@ -5,21 +5,19 @@ import { RealtimeSessionResult } from './types';
 export interface ConversationClient {
   npcId: string;
   playerName: string;
-  attachAudioStream(stream: MediaStream): void;
+  /** Route remote WebRTC audio into the voice pipeline (element decodes, Web Audio taps). */
+  attachAudioStream(stream: MediaStream, playbackElement: HTMLAudioElement, track?: MediaStreamTrack): void;
   setTalking(talking: boolean): void;
-  onNpcLine(text: string): void; // streaming/partial NPC subtitle (local)
-  onPlayerLine(text: string): void; // final player transcript (local)
+  onNpcLine(text: string): void;
+  onPlayerLine(text: string): void;
   onTimeout?(): void;
   onFailed?(reason: string): void;
 }
 
 interface ConversationManagerDeps {
-  // Ask the server to mint an ephemeral Realtime token for this NPC.
   requestSession: (npcId: string) => Promise<RealtimeSessionResult>;
-  // Forward a finalized transcript line to the server (scene memory + broadcast).
   sendTranscript: (npcId: string, speaker: string, text: string) => void;
   resumeAudio?: () => Promise<void>;
-  // Called when the idle timer closes a session (sync server / notify director).
   onSessionIdleClose?: (npcId: string) => void;
 }
 
@@ -33,21 +31,13 @@ interface ActiveSession {
   speaking: boolean;
   audioEl: HTMLAudioElement;
   audioPlayRetry: number | null;
-  unmutePoll: number | null;
   tryPlayAudio: () => void;
   pendingDirective: string | null;
 }
 
 const CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
-// Theatrical scenes have long silences — 25s was killing live audio mid-show.
 const INACTIVITY_MS = 600_000;
 
-// Owns all WebRTC lifecycle for OpenAI Realtime speech-to-speech: mic capture,
-// SDP exchange, the control data channel, speech detection / interruption,
-// transcripts, audio playback routing, timeout, and cleanup.
-//
-// NPCs only listen inside a director-opened window: a session exists only
-// between start() and stop()/timeout. Nothing is autonomous.
 export class ConversationManager {
   private deps: ConversationManagerDeps;
   private sessions = new Map<string, ActiveSession>();
@@ -65,12 +55,10 @@ export class ConversationManager {
     return this.starting.has(npcId);
   }
 
-  // Open a conversation window. Returns false if anything fails so the caller
-  // can fall back to scripted dialogue.
   async start(client: ConversationClient): Promise<boolean> {
     const npcId = client.npcId;
     if (this.sessions.has(npcId)) {
-      console.log(`[${npcId}] conversation session already active — skipping duplicate start`);
+      console.log(`[${npcId}] conversation session already active`);
       return true;
     }
     const inFlight = this.starting.get(npcId);
@@ -87,62 +75,66 @@ export class ConversationManager {
 
   private async startSession(client: ConversationClient): Promise<boolean> {
     const npcId = client.npcId;
+    console.log(`[${npcId}] starting Realtime conversation session…`);
 
     await this.deps.resumeAudio?.().catch(() => {/* ignore */});
 
-    // Mic first while the director's click gesture is still fresh.
     let mic: MediaStream;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch {
       client.onFailed?.('Microphone unavailable');
       return false;
     }
 
-    // OpenAI recommends creating the playback element before the WebRTC handshake.
-    const audioEl = document.createElement('audio');
-    audioEl.autoplay = true;
-    (audioEl as HTMLMediaElement & { playsInline?: boolean }).playsInline = true;
-    audioEl.volume = 1;
-    document.body.appendChild(audioEl);
-    void audioEl.play().catch(() => {/* primed on user gesture */});
-
-    // Ephemeral token (instructions/secret knowledge bound server-side).
     const token = await this.deps.requestSession(npcId);
     if (!token.ok || !token.clientSecret) {
       mic.getTracks().forEach((t) => t.stop());
-      audioEl.remove();
       client.onFailed?.(token.error || 'No Realtime session');
       return false;
     }
 
+    const audioEl = document.createElement('audio');
+    audioEl.autoplay = false;
+    audioEl.muted = true;
+    audioEl.volume = 1;
+    (audioEl as HTMLMediaElement & { playsInline?: boolean }).playsInline = true;
+    // muted=true — decode only; WebRTCVoicePipeline owns speaker output via Web Audio
+
+    const tryPlayAudio = (): void => {
+      if (!audioEl.srcObject) return;
+      audioEl.muted = true;
+      audioEl.play().catch((err) => {
+        console.warn(`[${npcId}] audio play blocked — click the page:`, err);
+      });
+    };
+
     try {
       const pc = new RTCPeerConnection();
-      let remoteAttached = false;
+      let remoteTrackId: string | null = null;
 
-      const tryPlayAudio = (): void => {
-        audioEl.play().catch((err) => {
-          console.warn(`[${npcId}] NPC audio play blocked — click the page:`, err);
-          const unlock = (): void => {
-            tryPlayAudio();
-            window.removeEventListener('click', unlock);
-            window.removeEventListener('keydown', unlock);
-          };
-          window.addEventListener('click', unlock, { once: true });
-          window.addEventListener('keydown', unlock, { once: true });
+      const attachRemoteAudio = (stream: MediaStream): void => {
+        const track = stream.getAudioTracks()[0];
+        if (track?.id && track.id === remoteTrackId) return;
+        if (track?.id) remoteTrackId = track.id;
+
+        console.log(
+          `🔊 NPC ${npcId} remote audio (${track?.enabled ? 'enabled' : 'disabled'}, ` +
+            `muted=${track?.muted}) → WebRTC voice pipeline`
+        );
+
+        client.attachAudioStream(stream, audioEl, track);
+
+        track?.addEventListener('unmute', () => {
+          console.log(`🔊 NPC ${npcId} track unmuted`);
+          tryPlayAudio();
         });
       };
 
-      // Player mic -> model.
       mic.getTracks().forEach((track) => pc.addTrack(track, mic));
 
-      // Control channel.
       const dc = pc.createDataChannel('oai-events');
       const session: ActiveSession = {
         pc,
@@ -154,55 +146,15 @@ export class ConversationManager {
         speaking: false,
         audioEl,
         audioPlayRetry: null,
-        unmutePoll: null,
         tryPlayAudio,
         pendingDirective: null,
       };
 
-      const attachRemoteAudio = (stream: MediaStream): void => {
-        if (remoteAttached) return;
-        remoteAttached = true;
-        const tracks = stream.getAudioTracks();
-        console.log(
-          `🔊 NPC ${npcId} audio track connected (${tracks.length} track(s), ` +
-            `enabled=${tracks[0]?.enabled}, muted=${tracks[0]?.muted})`
-        );
-        audioEl.srcObject = stream;
-        audioEl.onplaying = () => {
-          console.log(`🔊 NPC ${npcId} audio playing`);
-          if (session.audioPlayRetry) {
-            window.clearInterval(session.audioPlayRetry);
-            session.audioPlayRetry = null;
-          }
-        };
+      session.audioPlayRetry = window.setInterval(tryPlayAudio, 800);
 
-        tryPlayAudio();
-        tracks.forEach((track) => {
-          track.addEventListener('unmute', () => {
-            console.log(`🔊 NPC ${npcId} audio track unmuted`);
-            tryPlayAudio();
-          });
-        });
-
-        // WebRTC tracks start muted until the first RTP packet; poll as a fallback.
-        if (tracks[0]?.muted) {
-          session.unmutePoll = window.setInterval(() => {
-            const t = stream.getAudioTracks()[0];
-            if (t && !t.muted) {
-              if (session.unmutePoll) window.clearInterval(session.unmutePoll);
-              session.unmutePoll = null;
-              console.log(`🔊 NPC ${npcId} audio track unmuted (poll)`);
-              tryPlayAudio();
-            }
-          }, 100);
-        }
-      };
-
-      // Remote model audio -> playback element (OpenAI WebRTC pattern).
       pc.ontrack = (e: RTCTrackEvent) => {
         const stream =
-          e.streams?.[0] ??
-          (e.track ? new MediaStream([e.track]) : null);
+          e.streams?.[0] ?? (e.track ? new MediaStream([e.track]) : null);
         if (stream) attachRemoteAudio(stream);
       };
 
@@ -216,11 +168,9 @@ export class ConversationManager {
         }
       };
 
-      session.audioPlayRetry = window.setInterval(tryPlayAudio, 800);
-
       dc.onopen = () => {
+        console.log(`[${npcId}] Realtime data channel open`);
         this.configureSession(session);
-        // Opening line so the guard speaks without waiting for player input.
         window.setTimeout(() => {
           this.createResponse(
             npcId,
@@ -230,7 +180,6 @@ export class ConversationManager {
       };
       dc.onmessage = (e: MessageEvent) => this.handleEvent(session, e.data);
 
-      // SDP offer/answer with OpenAI (GA endpoint, no model query param).
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -257,6 +206,7 @@ export class ConversationManager {
 
       this.sessions.set(npcId, session);
       this.resetInactivity(npcId);
+      console.log(`[${npcId}] Realtime session connected`);
       return true;
     } catch (err: any) {
       mic.getTracks().forEach((t) => t.stop());
@@ -266,14 +216,11 @@ export class ConversationManager {
     }
   }
 
-  // Director cue (or player turn) asking the NPC to produce a response now.
-  // `directive` is a per-response nudge (no secret knowledge).
   createResponse(npcId: string, directive?: string): void {
     const session = this.sessions.get(npcId);
     if (!session || session.dc.readyState !== 'open') return;
     if (!directive?.trim()) return;
 
-    // Queue if the model is still speaking — Realtime ignores overlapping response.create.
     if (session.speaking) {
       session.pendingDirective = directive;
       session.dc.send(JSON.stringify({ type: 'response.cancel' }));
@@ -286,11 +233,10 @@ export class ConversationManager {
 
   private sendResponse(session: ActiveSession, directive: string): void {
     this.setMicInput(session, false);
-    const english = 'Respond in spoken English only.';
     session.dc.send(
       JSON.stringify({
         type: 'response.create',
-        response: { instructions: `${directive} ${english}` },
+        response: { instructions: `${directive} Respond in spoken English only.` },
       })
     );
   }
@@ -311,28 +257,22 @@ export class ConversationManager {
 
     if (session.inactivityTimer) window.clearTimeout(session.inactivityTimer);
     if (session.audioPlayRetry) window.clearInterval(session.audioPlayRetry);
-    if (session.unmutePoll) window.clearInterval(session.unmutePoll);
+    session.audioEl.pause();
     session.audioEl.srcObject = null;
     session.audioEl.remove();
     try {
       session.dc.close();
-    } catch {
-      /* no-op */
-    }
+    } catch { /* no-op */ }
     session.mic.getTracks().forEach((t) => t.stop());
     try {
       session.pc.close();
-    } catch {
-      /* no-op */
-    }
+    } catch { /* no-op */ }
     session.client.setTalking(false);
   }
 
   async stopAll(): Promise<void> {
     await Promise.all(Array.from(this.sessions.keys()).map((id) => this.stop(id)));
   }
-
-  // ---------- internals ----------
 
   private setMicInput(session: ActiveSession, enabled: boolean): void {
     session.mic.getAudioTracks().forEach((track) => {
@@ -341,7 +281,6 @@ export class ConversationManager {
   }
 
   private configureSession(session: ActiveSession): void {
-    // Reassert English transcription + VAD on the live data channel.
     session.dc.send(
       JSON.stringify({
         type: 'session.update',
@@ -367,7 +306,6 @@ export class ConversationManager {
     }
     const npcId = session.client.npcId;
 
-    // Keep the session alive for any model/player activity.
     if (evt.type?.startsWith('response.') || evt.type?.startsWith('input_audio')) {
       this.resetInactivity(npcId);
     }
@@ -375,9 +313,7 @@ export class ConversationManager {
     switch (evt.type) {
       case 'input_audio_buffer.speech_started':
         this.resetInactivity(npcId);
-        // Ignore VAD while mic is muted (NPC speaking through speakers).
         if (!session.mic.getAudioTracks()[0]?.enabled) break;
-        // Barge-in: player deliberately spoke over the NPC.
         if (session.speaking) {
           session.dc.send(JSON.stringify({ type: 'response.cancel' }));
           session.speaking = false;
@@ -394,8 +330,7 @@ export class ConversationManager {
         const text = (evt.transcript || '').trim();
         if (text) {
           session.client.onPlayerLine(text);
-          const speaker = `player:${session.client.playerName}`;
-          this.deps.sendTranscript(npcId, speaker, text);
+          this.deps.sendTranscript(npcId, `player:${session.client.playerName}`, text);
         }
         this.resetInactivity(npcId);
         break;
@@ -432,7 +367,7 @@ export class ConversationManager {
         break;
 
       case 'error':
-        console.error('Realtime error:', evt.error || evt);
+        console.error(`[${npcId}] Realtime error:`, evt.error || evt);
         break;
     }
   }
@@ -443,14 +378,9 @@ export class ConversationManager {
     if (session.inactivityTimer) window.clearTimeout(session.inactivityTimer);
     session.inactivityTimer = window.setTimeout(() => {
       if (session.speaking) {
-        // NPC mid-line — give more time before closing.
         this.resetInactivity(npcId);
         return;
       }
-      console.warn(
-        `[${npcId}] conversation idle for ${INACTIVITY_MS / 1000}s — closing session. ` +
-          'Click Enable Conv again to restore voice.'
-      );
       session.client.onTimeout?.();
       this.deps.onSessionIdleClose?.(npcId);
       this.stop(npcId);

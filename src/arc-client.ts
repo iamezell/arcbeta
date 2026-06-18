@@ -9,6 +9,14 @@ import { ShowDirectorUI } from './show/ShowDirectorUI';
 import { SceneId } from './show/scenes';
 import { CueManager } from './npc/CueManager';
 import { NPCDirectorPanel } from './npc/NPCDirectorPanel';
+import { AudioManager } from './audio/AudioManager';
+import { AudioHooks } from './audio/AudioHooksBridge';
+import { LostInTheStormCues, StormAudioCueId } from './audio/LostInTheStormCues';
+import { AudioDebugPanel } from './audio/AudioDebugPanel';
+import { AudioDebugVisualizer } from './audio/AudioDebugVisualizer';
+import { WebRTCVoicePipeline, exposeWebRTCVoiceConsole } from './audio/WebRTCVoicePipeline';
+import { WebRTCVoiceDebug } from './audio/WebRTCVoiceDebug';
+import { isWebRTCVoiceDebugEnabled } from './audio/webrtcVoiceConfig';
 
 export class ARCClient {
   private scene: THREE.Scene;
@@ -34,6 +42,15 @@ export class ARCClient {
   private showDirectorUI: ShowDirectorUI | null = null;
   private cueManager: CueManager | null = null;
   private npcDirectorPanel: NPCDirectorPanel | null = null;
+  private audioManager: AudioManager | null = null;
+  private audioHooks: AudioHooks | null = null;
+  private stormCues: LostInTheStormCues | null = null;
+  private audioDebugPanel: AudioDebugPanel | null = null;
+  private audioDebugVisualizer: AudioDebugVisualizer | null = null;
+  private audioDebugRefresh = 0;
+  private webRTCVoicePipeline: WebRTCVoicePipeline | null = null;
+  private webRTCVoiceDebug: WebRTCVoiceDebug | null = null;
+  private webRTCVoiceDebugRefresh = 0;
 
   constructor(role: string, playerName: string) {
     this.role = role;
@@ -68,12 +85,71 @@ export class ARCClient {
     this.setupScene();
     this.setupNetworking();
     this.setupFPSController();
+    this.setupAudio();
     this.setupLocalPlayerModel();
     this.setupRoom();
     this.setupShow();
     this.setupNPCs();
+    this.setupDirectorKeyboard();
     this.setupWindowResize();
     this.animate();
+  }
+
+  private setupAudio(): void {
+    this.audioManager = new AudioManager({
+      camera: this.camera,
+      sceneParent: this.sceneWrapper,
+      getPlayerPositions: () => this.collectPlayerPositions(),
+    });
+    this.webRTCVoicePipeline = new WebRTCVoicePipeline(this.audioManager.getListener().context);
+    exposeWebRTCVoiceConsole(this.webRTCVoicePipeline);
+    if (isWebRTCVoiceDebugEnabled() && this.role === 'Director') {
+      this.webRTCVoiceDebug = new WebRTCVoiceDebug(this.webRTCVoicePipeline);
+    }
+    this.audioHooks = new AudioHooks(this.audioManager);
+    this.stormCues = new LostInTheStormCues(this.audioManager);
+    this.audioDebugVisualizer = new AudioDebugVisualizer(this.sceneWrapper);
+    if (this.role === 'Director') {
+      this.audioDebugPanel = new AudioDebugPanel(this.audioManager, this.audioDebugVisualizer);
+    }
+  }
+
+  /** Positions used to centre spatial cues on the player group. */
+  private collectPlayerPositions(): THREE.Vector3[] {
+    const out: THREE.Vector3[] = [];
+    const local = new THREE.Vector3();
+    this.camera.getWorldPosition(local);
+    out.push(local);
+    this.remotePlayers.forEach((group) => {
+      out.push(group.position.clone());
+    });
+    return out;
+  }
+
+  /** Director hotkeys 1–0 → storm audio cues (broadcast to all clients). */
+  private setupDirectorKeyboard(): void {
+    if (this.role !== 'Director') return;
+
+    const keyToCue: Record<string, StormAudioCueId> = {
+      Digit1: 'stormStart',
+      Digit2: 'stormStop',
+      Digit3: 'thunderDistant',
+      Digit4: 'thunderClose',
+      Digit5: 'wolfLeft',
+      Digit6: 'wolfRight',
+      Digit7: 'wolfBehind',
+      Digit8: 'werewolfCircle',
+      Digit9: 'branchSnap',
+      Digit0: 'distantScream',
+    };
+
+    document.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const cue = keyToCue[e.code];
+      if (!cue) return;
+      e.preventDefault();
+      this.socketClient.showCue(cue);
+    });
   }
 
   private setupRoom(): void {
@@ -84,6 +160,7 @@ export class ARCClient {
       sceneParent: this.sceneWrapper,
       roomLight: this.hemisphereLight,
       role: this.role,
+      audio: this.audioHooks!,
     });
     this.roomController.onRoomRestart = () => {
       this.fpsController?.resetToSpawn();
@@ -98,6 +175,8 @@ export class ARCClient {
       scene: this.scene,
       parent: this.sceneWrapper,
       role: this.role,
+      audio: this.audioHooks!,
+      stormCues: this.stormCues!,
       onTeleport: (spawn) => {
         this.fpsController?.setPosition(spawn.x, spawn.z, spawn.yaw);
         // Re-centre the VR world shift so headset locomotion stays correct.
@@ -140,9 +219,8 @@ export class ARCClient {
   }
 
   private setupNPCs(): void {
-    // Spatial-audio listener follows the camera (the player's head).
-    const listener = new THREE.AudioListener();
-    this.camera.add(listener);
+    // Share the AudioManager listener with NPC spatial playback (one listener per camera).
+    const listener = this.audioManager!.getListener();
 
     // The CueManager owns the NPC actors and applies authoritative server
     // updates. NPCs live in the world group so VR locomotion applies.
@@ -152,6 +230,9 @@ export class ARCClient {
       socket: this.socketClient,
       role: this.role,
       playerName: this.playerName,
+      voicePipeline: this.webRTCVoicePipeline!,
+      registerEmitter: (emitter) => this.audioManager!.registerEmitter(emitter),
+      onEnsureAudio: () => this.audioManager!.enable(),
     });
 
     // Director gets the debug control panel; the audience stays immersive.
@@ -375,6 +456,26 @@ export class ARCClient {
 
       // Advance theatrical show effects (rain, lightning, fades)
       this.showController?.update(delta);
+
+      // Advance spatial audio (moving emitters)
+      this.audioManager?.update(delta);
+      this.webRTCVoicePipeline?.update(this.camera, delta);
+
+      if (this.webRTCVoiceDebug) {
+        this.webRTCVoiceDebugRefresh += delta;
+        if (this.webRTCVoiceDebugRefresh > 0.5) {
+          this.webRTCVoiceDebugRefresh = 0;
+          this.webRTCVoiceDebug.refresh();
+        }
+      }
+
+      if (this.audioDebugPanel?.isOpen()) {
+        this.audioDebugRefresh += delta;
+        if (this.audioDebugRefresh > 1) {
+          this.audioDebugRefresh = 0;
+          this.audioDebugPanel.refresh();
+        }
+      }
 
       // Advance NPC actors (talking indicators, etc.)
       this.cueManager?.update(delta);

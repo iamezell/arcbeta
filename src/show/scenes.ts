@@ -1,9 +1,15 @@
 import * as THREE from 'three';
+import { StormAudioCueId } from '../audio/LostInTheStormCues';
 
 // Client mirror of the server's show vocabulary (backend/show/showState.ts).
 export type SceneId = 'PRE_SHOW' | 'ACT_1_STORM_ROAD';
 export type TransitionMode = 'instant' | 'assemble';
-export type ShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+
+/** Visual stage cues (client-side effects). */
+export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+
+/** All cues the Director can fire — visual + storm audio (synced via showCue socket). */
+export type ShowCue = VisualShowCue | StormAudioCueId;
 
 export const SCENE_PRE_SHOW: SceneId = 'PRE_SHOW';
 export const SCENE_ACT_1: SceneId = 'ACT_1_STORM_ROAD';

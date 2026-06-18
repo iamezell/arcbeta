@@ -12,12 +12,18 @@ import {
   RealtimeSessionResult,
 } from './types';
 
+import { WebRTCVoicePipeline } from '../audio/WebRTCVoicePipeline';
+
 export interface CueManagerOpts {
   parent: THREE.Object3D;
   listener: THREE.AudioListener;
   socket: SocketClient;
   role: string;
   playerName: string;
+  voicePipeline: WebRTCVoicePipeline;
+  registerEmitter?: (emitter: import('../audio/emitters/SpatialAudioEmitter').SpatialAudioEmitter) => void;
+  /** Resume/unlock the shared Web Audio context (user-gesture path). */
+  onEnsureAudio?: () => Promise<void>;
 }
 
 // Minimal shared subtitle overlay (bottom-centre). One line at a time, fading.
@@ -65,6 +71,9 @@ export class CueManager {
   private socket: SocketClient;
   private role: string;
   private playerName: string;
+  private voicePipeline: WebRTCVoicePipeline;
+  private registerEmitter?: CueManagerOpts['registerEmitter'];
+  private onEnsureAudio?: CueManagerOpts['onEnsureAudio'];
 
   private actors = new Map<string, NPCActor>();
   private allNpcs: NPCPublicSnapshot[] = [];
@@ -88,6 +97,9 @@ export class CueManager {
     this.socket = opts.socket;
     this.role = opts.role;
     this.playerName = opts.playerName;
+    this.voicePipeline = opts.voicePipeline;
+    this.registerEmitter = opts.registerEmitter;
+    this.onEnsureAudio = opts.onEnsureAudio;
 
     // All NPC meshes live under one group so we can show/hide them per act.
     this.npcRoot = new THREE.Group();
@@ -133,9 +145,18 @@ export class CueManager {
   /** Start/stop conversation locally while the user gesture is still active. */
   async enableConversationLocal(npcId: string): Promise<void> {
     this.localConversationEnable.add(npcId);
+    await this.onEnsureAudio?.().catch(() => {/* ignore */});
     await this.listener.context.resume().catch(() => {/* ignore */});
     const actor = this.actors.get(npcId);
-    if (actor) await actor.enableConversation();
+    if (!actor) {
+      console.warn(`[CueManager] No actor for "${npcId}" — is Act 1 active?`);
+      return;
+    }
+    if (actor.kind !== 'ai') {
+      console.warn(`[CueManager] "${npcId}" is human-driven — select an AI guard (e.g. guard1) for voice.`);
+      return;
+    }
+    await actor.enableConversation();
     window.setTimeout(() => this.localConversationEnable.delete(npcId), 5000);
   }
 
@@ -265,12 +286,14 @@ export class CueManager {
       actorKind: (snap.isAI ? 'ai' : 'human') as const,
       onSubtitle: (npcId: string, speaker: string, text: string) =>
         this.handleSubtitle(npcId, speaker, text),
+      registerEmitter: this.registerEmitter,
     };
     if (snap.isAI) {
       const actor = new AIActor({
         ...base,
         conversation: this.conversation,
         playerName: this.playerName,
+        voicePipeline: this.voicePipeline,
       });
       actor.takeOver();
       return actor;

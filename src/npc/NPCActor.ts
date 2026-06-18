@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { NPCAudioEmitter } from '../audio/emitters';
+import { SpatialAudioEmitter } from '../audio/emitters/SpatialAudioEmitter';
 import { ActorInterface } from './ActorInterface';
 import { NPCStateMachine } from './NPCStateMachine';
 import {
@@ -17,6 +19,8 @@ export interface NPCActorOpts {
   actorKind: ActorKind;
   // Push a subtitle to the shared overlay.
   onSubtitle: (npcId: string, speaker: string, text: string) => void;
+  /** Register world-space emitter with AudioManager for debug + per-frame updates. */
+  registerEmitter?: (emitter: SpatialAudioEmitter) => void;
 }
 
 // Common functionality shared by every NPC driver (human or AI): the 3D
@@ -35,7 +39,7 @@ export abstract class NPCActor implements ActorInterface {
   protected group: THREE.Group;
   protected body: THREE.Mesh;
   protected indicator: THREE.Mesh;
-  protected positionalAudio: THREE.PositionalAudio;
+  protected voiceEmitter: NPCAudioEmitter;
   protected labelSprite: THREE.Sprite | null = null;
 
   protected currentState: NPCState;
@@ -87,13 +91,14 @@ export abstract class NPCActor implements ActorInterface {
     this.indicator.position.y = 2.1;
     this.group.add(this.indicator);
 
-    // Spatial audio anchored to the NPC's location.
-    this.positionalAudio = new THREE.PositionalAudio(this.listener);
-    this.positionalAudio.setRefDistance(8);
-    this.positionalAudio.setMaxDistance(120);
-    this.positionalAudio.setRolloffFactor(1.2);
-    this.positionalAudio.setVolume(1);
-    this.group.add(this.positionalAudio);
+    // Positional voice at the NPC's mouth — moves with the actor.
+    this.voiceEmitter = new NPCAudioEmitter({
+      id: `npc-voice-${opts.snapshot.id}`,
+      label: opts.snapshot.name,
+      parent: this.group,
+      listener: opts.listener,
+    });
+    opts.registerEmitter?.(this.voiceEmitter);
 
     this.buildLabel();
     this.parent.add(this.group);
@@ -130,16 +135,7 @@ export abstract class NPCActor implements ActorInterface {
 
   dispose(): void {
     this.setTalking(false);
-    try {
-      this.positionalAudio.disconnect();
-    } catch {
-      /* no-op */
-    }
-    if (this.audioSink) {
-      this.audioSink.srcObject = null;
-      this.audioSink.remove();
-      this.audioSink = null;
-    }
+    this.voiceEmitter.dispose();
     this.parent.remove(this.group);
   }
 
@@ -156,28 +152,7 @@ export abstract class NPCActor implements ActorInterface {
   applySnapshot(snapshot: NPCPublicSnapshot): void {
     this.snapshot = snapshot;
     this.setState(snapshot.currentState, snapshot.currentEmotion);
-  }
-
-  // Route a live WebRTC remote audio stream into spatial playback (backup path;
-  // ConversationManager owns the primary <audio> element per OpenAI's WebRTC guide).
-  attachAudioStream(stream: MediaStream): void {
-    this.detachAudioStream();
-
-    const ctx = this.listener.context;
-    const wireSpatial = (): void => {
-      try {
-        this.positionalAudio.setMediaStreamSource(stream);
-        console.log(`[${this.snapshot.id}] spatial NPC audio wired`);
-      } catch (err) {
-        console.warn(`[${this.snapshot.id}] spatial NPC audio failed:`, err);
-      }
-    };
-
-    if (ctx.state === 'suspended') {
-      ctx.resume().then(wireSpatial).catch(() => wireSpatial());
-    } else {
-      wireSpatial();
-    }
+    this.group.position.set(snapshot.location.x, snapshot.location.y, snapshot.location.z);
   }
 
   /** Resume the Web Audio context (browser autoplay policy). */
@@ -185,14 +160,6 @@ export abstract class NPCActor implements ActorInterface {
     const ctx = this.listener.context;
     if (ctx.state === 'suspended') {
       await ctx.resume();
-    }
-  }
-
-  detachAudioStream(): void {
-    try {
-      this.positionalAudio.disconnect();
-    } catch {
-      /* no-op */
     }
   }
 
@@ -213,6 +180,7 @@ export abstract class NPCActor implements ActorInterface {
   }
 
   // Per-frame animation: pulse the indicator while talking.
+  // Voice emitter updates run via AudioManager.registerEmitter().
   update(delta: number): void {
     if (this.talking) {
       this.talkPhase += delta * 10;

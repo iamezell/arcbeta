@@ -1,7 +1,22 @@
 import { SceneId, TransitionMode, ShowCue, SCENE_ACT_1, SCENE_LABELS } from './scenes';
+import { StormAudioCueId } from '../audio/LostInTheStormCues';
 
 // Minimal DOM panel for the Director to drive the show. Only created for the
 // Director role; the audience never sees it (the experience stays 3D-first).
+
+const STORM_AUDIO_BUTTONS: { cue: StormAudioCueId; label: string; key?: string }[] = [
+  { cue: 'stormStart', label: 'Start Storm', key: '1' },
+  { cue: 'stormStop', label: 'Stop Storm', key: '2' },
+  { cue: 'thunderDistant', label: 'Distant Thunder', key: '3' },
+  { cue: 'thunderClose', label: 'Close Thunder', key: '4' },
+  { cue: 'wolfLeft', label: 'Wolf Left', key: '5' },
+  { cue: 'wolfRight', label: 'Wolf Right', key: '6' },
+  { cue: 'wolfBehind', label: 'Wolf Behind', key: '7' },
+  { cue: 'werewolfCircle', label: 'Werewolf Circle', key: '8' },
+  { cue: 'branchSnap', label: 'Branch Snap', key: '9' },
+  { cue: 'distantScream', label: 'Distant Scream', key: '0' },
+  { cue: 'churchBell', label: 'Church Bell' },
+];
 
 export class ShowDirectorUI {
   private panel: HTMLDivElement;
@@ -30,13 +45,16 @@ export class ShowDirectorUI {
         </select>
       </div>
       <button class="asd-start">Start Act 1</button>
-      <div class="asd-cues-title">Cues</div>
+      <div class="asd-cues-title">Visual Cues</div>
       <div class="asd-cues">
         <button data-cue="thunder">Thunder</button>
         <button data-cue="lightning">Lightning</button>
         <button data-cue="rainUp">Rain Up</button>
         <button data-cue="gateLight">Gate Light On</button>
       </div>
+      <div class="asd-cues-title asd-storm-title">Storm Audio</div>
+      <div class="asd-storm-cues"></div>
+      <p class="asd-hint">Hotkeys 1–0 for storm cues (Director only)</p>
     `;
     document.body.appendChild(this.panel);
 
@@ -54,6 +72,17 @@ export class ShowDirectorUI {
         if (cue) this.onCue(cue);
       });
     });
+
+    const stormList = this.panel.querySelector('.asd-storm-cues')!;
+    for (const { cue, label, key } of STORM_AUDIO_BUTTONS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'asd-storm-btn';
+      btn.dataset.cue = cue;
+      btn.textContent = key ? `${label} [${key}]` : label;
+      btn.addEventListener('click', () => this.onCue(cue));
+      stormList.appendChild(btn);
+    }
   }
 
   setCurrentScene(scene: SceneId): void {
@@ -91,6 +120,19 @@ export class ShowDirectorUI {
         background: #2a2f3c; color: #fff; font-size: 12px;
       }
       #arc-show-director .asd-cues button:hover { background: #3a4150; }
+      #arc-show-director .asd-storm-title { margin-top: 12px; }
+      #arc-show-director .asd-storm-cues {
+        display: flex; flex-direction: column; gap: 5px; max-height: 220px;
+        overflow-y: auto; margin-bottom: 6px;
+      }
+      #arc-show-director .asd-storm-btn {
+        padding: 7px 8px; border: 0; border-radius: 6px; cursor: pointer;
+        background: #1e2838; color: #c8d8ff; font-size: 11px; text-align: left;
+      }
+      #arc-show-director .asd-storm-btn:hover { background: #2a3848; }
+      #arc-show-director .asd-hint {
+        margin: 0; font-size: 10px; opacity: 0.55; line-height: 1.3;
+      }
     `;
     document.head.appendChild(style);
   }

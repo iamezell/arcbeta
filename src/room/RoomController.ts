@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { SocketClient } from '../socket-client';
 import { RoomRenderer } from './RoomRenderer';
 import { RoomUI } from './RoomUI';
-import { AudioHooks } from './AudioHooks';
+import { AudioHooks } from '../audio/AudioHooksBridge';
 import { RoomStatePayload, StateChangePayload, RevealPayload, WireObject } from './types';
 
 // Glue layer between the authoritative server, the greybox renderer and the DOM.
@@ -35,11 +35,12 @@ export class RoomController {
     sceneParent: THREE.Object3D;
     roomLight?: THREE.HemisphereLight;
     role: string;
+    audio: AudioHooks;
   }) {
     this.camera = opts.camera;
     this.socket = opts.socket;
     this.role = opts.role;
-    this.audio = new AudioHooks();
+    this.audio = opts.audio;
     this.renderer = new RoomRenderer(opts.sceneParent, opts.roomLight);
     this.ui = new RoomUI();
 

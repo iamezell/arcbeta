@@ -1,7 +1,8 @@
 import express, { Request, Response, Router } from 'express';
 import { Server } from 'socket.io';
 import { requireStreamDeckToken } from '../utils/streamDeckAuth';
-import { getSession, emitApplyResult } from '../rooms/sessionManager';
+import { getSession, emitApplyResult, SCENE_ROOM } from '../rooms/sessionManager';
+import { VALID_CUES, ShowCue } from '../show/showState';
 
 const router: Router = express.Router();
 
@@ -42,6 +43,32 @@ router.post(['/event', '/event/:eventId'], requireStreamDeckToken, (req: Request
   console.log(`🎬 Stream Deck triggered director event "${eventId}"`);
 
   res.json({ ok: true, eventId, changes: result.changes, complete: result.complete });
+});
+
+// List stage / storm audio cue ids (for Stream Deck configuration).
+router.get('/cues', (_req: Request, res: Response) => {
+  res.json({ cues: VALID_CUES });
+});
+
+// Fire a show cue (visual or storm audio) — mirrors the in-scene showCue socket.
+//   POST /director/cue/stormStart
+router.post(['/cue', '/cue/:cueId'], requireStreamDeckToken, (req: Request, res: Response) => {
+  const cueId = (req.params.cueId || req.body?.cue || req.query?.cue) as string | undefined;
+  if (!cueId) {
+    return res.status(400).json({ error: 'Missing cue id' });
+  }
+  if (!VALID_CUES.includes(cueId as ShowCue)) {
+    return res.status(404).json({ error: `Unknown cue: ${cueId}` });
+  }
+
+  const io = req.app.get('io') as Server | undefined;
+  if (!io) {
+    return res.status(500).json({ error: 'Server is not ready' });
+  }
+
+  io.to(SCENE_ROOM).emit('showCue', { cue: cueId });
+  console.log(`🎬 Stream Deck fired show cue "${cueId}"`);
+  res.json({ ok: true, cue: cueId });
 });
 
 export default router;
