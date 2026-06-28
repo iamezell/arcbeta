@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as RAPIER from '@dimforge/rapier3d-compat';
+import { ACT1_GROUND } from './show/act1Ground';
 
 // Initialize Rapier in the module
 let rapierInitialized = false;
@@ -67,12 +68,7 @@ export class PhysicsManager {
   private createGround(): void {
     if (!this.world) return;
 
-    // Sized to cover Act 1's storm road (mud plane is 90×180 centred at z=-40,
-    // gate/NPCs around z=-75). The old 100×100 slab at the origin ended at z=-50,
-    // so players fell through the visible ground when walking toward the gate lights.
-    const halfX = 50;
-    const halfZ = 95;
-    const centerZ = -40;
+    const { centerZ, halfX, halfZ } = ACT1_GROUND;
 
     const groundBodyDesc = RAPIER.RigidBodyDesc.fixed()
       .setTranslation(0, -0.5, centerZ);
@@ -137,31 +133,40 @@ export class PhysicsManager {
   }
 
   public applyMovement(forward: boolean, backward: boolean, left: boolean, right: boolean, cameraRotation: THREE.Euler): void {
+    // Boolean (digital) input maps onto the analog path at full deflection.
+    const strafe = (right ? 1 : 0) - (left ? 1 : 0);
+    const fwd = (forward ? 1 : 0) - (backward ? 1 : 0);
+    this.applyMovementVector(strafe, fwd, cameraRotation);
+  }
+
+  /**
+   * Analog movement. strafe/forward are -1..1 (joystick or thumbstick); their
+   * combined magnitude scales speed so a half-pushed stick walks, full sprints.
+   * x = strafe (+right), forward = +1 moves toward where the camera looks (-Z).
+   */
+  public applyMovementVector(strafe: number, forward: number, cameraRotation: THREE.Euler): void {
     if (!this.playerBody) return;
 
     // Fast, arena-FPS style move speed
     const moveSpeed = 10.0;
-    const direction = new THREE.Vector3();
-    
-    if (forward) direction.z -= 1;
-    if (backward) direction.z += 1;
-    if (left) direction.x -= 1;
-    if (right) direction.x += 1;
-    
-    if (direction.length() > 0) {
+    const direction = new THREE.Vector3(strafe, 0, -forward);
+    const magnitude = Math.min(1, direction.length());
+
+    if (magnitude > 0.0001) {
       direction.normalize();
-      
-      // Apply camera rotation to movement direction
+
+      // Apply camera yaw so movement is relative to where the player faces.
       const euler = new THREE.Euler(0, cameraRotation.y, 0);
       direction.applyEuler(euler);
-      
-      // Directly control horizontal velocity (Quake/Doom style)
+
+      // Directly control horizontal velocity (Quake/Doom style), scaled by deflection.
+      const speed = moveSpeed * magnitude;
       const currentVel = this.playerBody.linvel();
       this.playerBody.setLinvel(
         {
-          x: direction.x * moveSpeed,
+          x: direction.x * speed,
           y: currentVel.y, // Preserve vertical velocity for jumping/falling
-          z: direction.z * moveSpeed
+          z: direction.z * speed
         },
         true
       );

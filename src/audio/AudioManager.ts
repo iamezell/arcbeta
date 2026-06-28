@@ -4,6 +4,7 @@ import { resolveCue, isGlobalCue, getSpatialPreset } from './cueRegistry';
 import { SpatialAudioEmitter } from './emitters/SpatialAudioEmitter';
 import { AmbientAudioEmitter } from './emitters';
 import { applySpatialPreset, SPATIAL_PRESETS } from './spatialConfig';
+import { createProceduralBuffer, proceduralKindForCue } from './ProceduralFallback';
 import {
   AudioDebugState,
   CueDefinition,
@@ -96,6 +97,25 @@ export class AudioManager {
   private movingEmitters: MovingEmitter[] = [];
   /** resolved cue name → active count (for maxInstances). */
   private instanceCounts = new Map<string, number>();
+
+  // ---- Personalized / file-based audio (cue packs, private cues) ----
+  // These play arbitrary library files (public/audio/library/...) rather than
+  // registry cue names, so the cue-pack + audience system can layer on top of
+  // the existing soundboard without touching the cue registry.
+  private urlLoader = new THREE.AudioLoader();
+  private urlBufferCache = new Map<string, AudioBuffer>();
+  private urlLoading = new Map<string, Promise<AudioBuffer>>();
+  /** Active private loops, keyed by `${participantId}::${loopId}`. */
+  private privateLoops = new Map<string, THREE.Audio | THREE.PositionalAudio>();
+  /** Active private one-shots per participant (so we can hard-stop on Calm/Reset). */
+  private privateOneShots = new Map<string, Set<THREE.Audio | THREE.PositionalAudio>>();
+
+  /**
+   * SAFETY: conservative ceiling for private/intimate cues. Voluntary immersive
+   * theater — whispers/heartbeats should never spike. The director cannot exceed
+   * this from the panel; raise deliberately in code only if a show needs it.
+   */
+  private static readonly MAX_PRIVATE_VOLUME = 0.8;
 
   /** Last theatrical events (for debug / future multiplayer sync). */
   private recentEvents: CueEvent[] = [];
@@ -557,6 +577,266 @@ export class AudioManager {
 
   getRecentEvents(): CueEvent[] {
     return [...this.recentEvents];
+  }
+
+  // ---------- file-based audio (cue packs) ----------
+  //
+  // The audience/cue-pack system references library file paths directly. These
+  // methods load + play arbitrary URLs alongside the registry-driven soundboard.
+  // "Global" = heard by this browser's listener (a global cue is broadcast by the
+  // engine so every client plays it). "Private" = only THIS browser plays it, so
+  // the engine only calls private methods on the targeted client.
+
+  /** Non-positional one-shot from a library file. */
+  async playGlobalSound(src: string, options: { volume?: number; pitch?: number; group?: VolumeGroup } = {}): Promise<void> {
+    if (!this.enabled) return;
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const group = options.group ?? 'sfx';
+    const audio = new THREE.Audio(this.listener);
+    audio.setBuffer(buffer);
+    audio.setLoop(false);
+    if (options.pitch) audio.setPlaybackRate(options.pitch);
+    audio.setVolume((options.volume ?? 1) * this.groupVolume[group] * this.groupVolume.master);
+    audio.play();
+    audio.onEnded = () => audio.disconnect();
+  }
+
+  /** Looping non-positional bed from a library file (managed by ambience layer). */
+  async playGlobalLoop(src: string, options: { layer?: string; volume?: number; fadeIn?: number } = {}): Promise<void> {
+    if (!this.enabled) return;
+    const layer = options.layer ?? src;
+    this.stopLoop(layer, 0);
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const targetVol = (options.volume ?? 0.5) * this.groupVolume.ambience * this.groupVolume.master;
+    const audio = new THREE.Audio(this.listener);
+    audio.setBuffer(buffer);
+    audio.setLoop(true);
+    audio.setVolume(options.fadeIn ? 0 : targetVol);
+    audio.play();
+    this.ambienceLayers.set(layer, { layer, cueName: src, audio, targetVolume: targetVol, spatial: false });
+    if (options.fadeIn && options.fadeIn > 0) this.fadeAudioVolume(audio, 0, targetVol, options.fadeIn);
+  }
+
+  /** Positional one-shot from a library file at a world position. */
+  async playPositionalSound(
+    src: string,
+    worldPosition: THREE.Vector3,
+    options: { volume?: number; pitch?: number; refDistance?: number; maxDistance?: number } = {}
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const emitter = new THREE.Object3D();
+    emitter.position.copy(worldPosition);
+    this.sceneParent.add(emitter);
+    const audio = new THREE.PositionalAudio(this.listener);
+    audio.setBuffer(buffer);
+    audio.setRefDistance(options.refDistance ?? 5);
+    audio.setMaxDistance(options.maxDistance ?? 50);
+    if (options.pitch) audio.setPlaybackRate(options.pitch);
+    audio.setVolume((options.volume ?? 1) * this.groupVolume.sfx * this.groupVolume.master);
+    emitter.add(audio);
+    audio.play();
+    audio.onEnded = () => {
+      emitter.remove(audio);
+      this.sceneParent.remove(emitter);
+    };
+  }
+
+  // ---------- private (per-participant) audio ----------
+  //
+  // Private cues only ever play in the targeted participant's browser. The
+  // CueEngine decides whether THIS client is the target (local match or dev-mock
+  // preview) before calling these; in multiplayer the engine sends a network
+  // event so only the target client invokes them.
+
+  /** Private one-shot heard only by this browser (volume clamped to safe ceiling). */
+  async playPrivateSound(participantId: string, src: string, options: { volume?: number; pitch?: number } = {}): Promise<void> {
+    if (!this.enabled) return;
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const audio = new THREE.Audio(this.listener);
+    audio.setBuffer(buffer);
+    audio.setLoop(false);
+    if (options.pitch) audio.setPlaybackRate(options.pitch);
+    audio.setVolume(this.privateVolume(options.volume));
+    audio.play();
+    this.trackPrivateOneShot(participantId, audio);
+    audio.onEnded = () => {
+      this.untrackPrivateOneShot(participantId, audio);
+      audio.disconnect();
+    };
+  }
+
+  /** Private intimate whisper — same as a private sound but extra-conservative. */
+  async playPrivateWhisper(participantId: string, src: string, options: { volume?: number } = {}): Promise<void> {
+    await this.playPrivateSound(participantId, src, { volume: Math.min(options.volume ?? 0.5, 0.6) });
+  }
+
+  /** Private looping bed (heartbeat, breathing, dread). Keyed by loopId. */
+  async playPrivateLoop(
+    participantId: string,
+    src: string,
+    loopId: string,
+    options: { volume?: number; fadeIn?: number; position?: THREE.Vector3 } = {}
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const key = this.privateKey(participantId, loopId);
+    this.stopPrivateLoop(participantId, loopId, 0);
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const target = this.privateVolume(options.volume);
+
+    if (options.position) {
+      const emitter = new THREE.Object3D();
+      emitter.position.copy(options.position);
+      this.sceneParent.add(emitter);
+      const pa = new THREE.PositionalAudio(this.listener);
+      pa.setBuffer(buffer);
+      pa.setLoop(true);
+      pa.setRefDistance(4);
+      pa.setVolume(options.fadeIn ? 0 : target);
+      emitter.add(pa);
+      pa.play();
+      (pa as THREE.PositionalAudio & { __emitter?: THREE.Object3D }).__emitter = emitter;
+      this.privateLoops.set(key, pa);
+      if (options.fadeIn) this.fadeAudioVolume(pa, 0, target, options.fadeIn);
+      return;
+    }
+
+    const audio = new THREE.Audio(this.listener);
+    audio.setBuffer(buffer);
+    audio.setLoop(true);
+    audio.setVolume(options.fadeIn ? 0 : target);
+    audio.play();
+    this.privateLoops.set(key, audio);
+    if (options.fadeIn) this.fadeAudioVolume(audio, 0, target, options.fadeIn);
+  }
+
+  stopPrivateLoop(participantId: string, loopId: string, fadeOut = 0.6): void {
+    const key = this.privateKey(participantId, loopId);
+    const audio = this.privateLoops.get(key);
+    if (!audio) return;
+    this.privateLoops.delete(key);
+    const cleanup = (): void => {
+      audio.stop();
+      const emitter = (audio as THREE.PositionalAudio & { __emitter?: THREE.Object3D }).__emitter;
+      if (emitter) {
+        emitter.remove(audio);
+        this.sceneParent.remove(emitter);
+      } else {
+        audio.disconnect();
+      }
+    };
+    if (fadeOut <= 0) {
+      cleanup();
+      return;
+    }
+    this.fadeAudioVolume(audio, audio.getVolume(), 0, fadeOut, cleanup);
+  }
+
+  /** Private positional one-shot at a world position (e.g. wolf behind a person). */
+  async playPrivatePositional(
+    participantId: string,
+    src: string,
+    worldPosition: THREE.Vector3,
+    options: { volume?: number } = {}
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const buffer = await this.loadUrl(src);
+    if (!buffer) return;
+    const emitter = new THREE.Object3D();
+    emitter.position.copy(worldPosition);
+    this.sceneParent.add(emitter);
+    const pa = new THREE.PositionalAudio(this.listener);
+    pa.setBuffer(buffer);
+    pa.setRefDistance(4);
+    pa.setMaxDistance(40);
+    pa.setVolume(this.privateVolume(options.volume));
+    emitter.add(pa);
+    pa.play();
+    this.trackPrivateOneShot(participantId, pa);
+    pa.onEnded = () => {
+      this.untrackPrivateOneShot(participantId, pa);
+      emitter.remove(pa);
+      this.sceneParent.remove(emitter);
+    };
+  }
+
+  /** SAFETY: stop ALL private audio for a participant (quick-disable / Calm-Reset). */
+  stopAllPrivate(participantId: string): void {
+    for (const key of [...this.privateLoops.keys()]) {
+      if (key.startsWith(`${participantId}::`)) {
+        const [, loopId] = key.split('::');
+        this.stopPrivateLoop(participantId, loopId, 0.4);
+      }
+    }
+    const shots = this.privateOneShots.get(participantId);
+    if (shots) {
+      for (const a of shots) {
+        a.stop();
+        a.disconnect();
+      }
+      shots.clear();
+    }
+  }
+
+  /** SAFETY: stop every private cue for everyone (global Calm / Reset). */
+  stopAllPrivateEverywhere(): void {
+    const ids = new Set<string>();
+    for (const key of this.privateLoops.keys()) ids.add(key.split('::')[0]);
+    for (const id of this.privateOneShots.keys()) ids.add(id);
+    for (const id of ids) this.stopAllPrivate(id);
+  }
+
+  private privateVolume(v?: number): number {
+    const clamped = Math.min(v ?? 0.5, AudioManager.MAX_PRIVATE_VOLUME);
+    return clamped * this.groupVolume.sfx * this.groupVolume.master;
+  }
+
+  private privateKey(participantId: string, loopId: string): string {
+    return `${participantId}::${loopId}`;
+  }
+
+  private trackPrivateOneShot(participantId: string, audio: THREE.Audio | THREE.PositionalAudio): void {
+    let set = this.privateOneShots.get(participantId);
+    if (!set) {
+      set = new Set();
+      this.privateOneShots.set(participantId, set);
+    }
+    set.add(audio);
+  }
+
+  private untrackPrivateOneShot(participantId: string, audio: THREE.Audio | THREE.PositionalAudio): void {
+    this.privateOneShots.get(participantId)?.delete(audio);
+  }
+
+  private async loadUrl(src: string): Promise<AudioBuffer | null> {
+    const cached = this.urlBufferCache.get(src);
+    if (cached) return cached;
+    const inflight = this.urlLoading.get(src);
+    if (inflight) return inflight;
+    const promise = this.urlLoader
+      .loadAsync(src)
+      .then((buffer) => {
+        this.urlBufferCache.set(src, buffer);
+        return buffer;
+      })
+      .catch(() => {
+        // Library file not present yet — synthesize an audible placeholder so
+        // dev/preview still proves the routing (matches CueAssetLoader behavior).
+        console.warn(`[AudioManager] library asset missing, using procedural placeholder: ${src}`);
+        const kind = proceduralKindForCue(src, '', '');
+        const duration = kind === 'rain' || kind === 'wind' ? 3 : kind === 'thunder' ? 2.5 : 1.6;
+        const buffer = createProceduralBuffer(this.listener.context as AudioContext, kind, duration);
+        this.urlBufferCache.set(src, buffer);
+        return buffer;
+      })
+      .finally(() => this.urlLoading.delete(src));
+    this.urlLoading.set(src, promise);
+    return promise;
   }
 
   // ---------- internals ----------

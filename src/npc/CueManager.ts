@@ -176,6 +176,10 @@ export class CueManager {
     return this.memory;
   }
 
+  getActor(npcId: string): NPCActor | undefined {
+    return this.actors.get(npcId);
+  }
+
   update(delta: number): void {
     this.actors.forEach((a) => a.update(delta));
   }

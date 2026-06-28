@@ -78,6 +78,10 @@ When enabled (Director client):
 
 Production builds without the debug flag omit the panel and `arcVoice.*`.
 
+## Related docs
+
+- [CueEngine.md](./CueEngine.md) — timed beats, moments, and director theatrical sequences
+
 ## Manual test (production behavior)
 
 1. Hard refresh → **Enable Audio** → Act 1

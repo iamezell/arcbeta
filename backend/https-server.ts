@@ -8,6 +8,8 @@ import { Server } from 'socket.io';
 import registerLobbySocket from './sockets/lobbySocket';
 import registerNPCSocket from './sockets/npcSocket';
 import connectDB from './config/db';
+import { getNetworkInfo } from './utils/networkInfo';
+import { getShowCode } from './show/session';
 
 // Load environment variables
 dotenv.config();
@@ -44,6 +46,17 @@ const PORT = process.env.PORT || 443;
 server.listen(PORT, () => {
   console.log(`🚀 ARC Beta running on https://localhost:${PORT}`);
   console.log(`📡 Socket.IO ready for connections`);
+  try {
+    const net = getNetworkInfo({ joinPath: '/join', showCode: getShowCode() });
+    if (net.fallback) {
+      console.log('📶 No LAN IP detected — connect to Wi-Fi for phone/headset join.');
+    } else {
+      console.log(`📲 Audience join:  ${net.joinUrl}`);
+      console.log(`🖥️  Host screen:    https://${net.recommendedIp}${net.frontendPort === 443 ? '' : ':' + net.frontendPort}/join-screen`);
+    }
+  } catch {
+    /* non-fatal */
+  }
 });
 
 // Plain-HTTP listener bound to localhost for tools that can't accept the

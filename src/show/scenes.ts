@@ -6,7 +6,7 @@ export type SceneId = 'PRE_SHOW' | 'ACT_1_STORM_ROAD';
 export type TransitionMode = 'instant' | 'assemble';
 
 /** Visual stage cues (client-side effects). */
-export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight' | 'blackout';
 
 /** All cues the Director can fire — visual + storm audio (synced via showCue socket). */
 export type ShowCue = VisualShowCue | StormAudioCueId;

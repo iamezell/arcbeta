@@ -1,5 +1,6 @@
 import { CueManager } from './CueManager';
 import { ALL_CUES, DirectorCue } from './types';
+import { makeDraggablePanel } from '../ui/DraggablePanel';
 
 // Temporary debug panel for the Director: pick an NPC, fire cues, open/close
 // conversation windows, swap AI<->Human, and inspect live state + memory +
@@ -58,6 +59,7 @@ export class NPCDirectorPanel {
     this.wireEvents();
     this.cueManager.onRosterChanged = () => this.refresh();
     this.refresh();
+    makeDraggablePanel(this.panel);
   }
 
   private wireEvents(): void {

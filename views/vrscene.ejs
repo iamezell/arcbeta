@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title><%= title %></title>
   <style>
     body {
@@ -87,11 +87,21 @@
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="/js/arc-client.js"></script>
   <script type="module">
-    // Get role and name from URL
+    // Get role, name, and show code from URL
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role') || 'Audience';
     const playerName = urlParams.get('name') || 'Player';
-    
+    const showCode = urlParams.get('show') || '';
+
+    // Best-effort device classification from the user agent (phone/headset/desktop).
+    function detectDeviceType() {
+      const ua = navigator.userAgent || '';
+      if (/OculusBrowser|Quest|VR|Pico|XR/i.test(ua) || (navigator.xr && /Mobile/i.test(ua) && /VR/i.test(ua))) return 'headset';
+      if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return 'phone';
+      return 'desktop';
+    }
+    const deviceType = detectDeviceType();
+
     // Update UI
     document.getElementById('roleDisplay').textContent = role;
     document.getElementById('playerName').textContent = playerName;
@@ -101,7 +111,12 @@
     const socketClient = arcClient.getSocketClient();
     
     // Join lobby (fromScene = true: this socket is already inside the experience)
-    socketClient.joinLobby(role, playerName, true);
+    socketClient.joinLobby(role, playerName, true, { showCode, deviceType });
+
+    // Phone/limited-input devices: gently set expectations without blocking the join.
+    if (deviceType === 'phone' && arcClient.showDeviceNotice) {
+      arcClient.showDeviceNotice('You are connected as an audience device. Movement controls may be limited in this build.');
+    }
     
     // Update connection status
     document.getElementById('connectionStatus').textContent = 'Connected';

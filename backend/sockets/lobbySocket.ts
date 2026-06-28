@@ -12,7 +12,9 @@ import {
   VALID_MODES,
   VALID_CUES,
 } from '../show/showState';
+import { VALID_BEAT_IDS, VALID_MOMENT_IDS } from '../cueEngine/cueEngineIds';
 import { getDirectorController } from '../npc/DirectorController';
+import { getShowCode } from '../show/session';
 
 interface PlayerMoveData {
   position: { x: number; y: number; z: number };
@@ -25,6 +27,9 @@ interface JoinLobbyData {
   // Sent by the 3D scene page so we know this socket is in the experience,
   // not waiting on the lobby page to be admitted.
   fromScene?: boolean;
+  // Local-rehearsal join metadata.
+  showCode?: string;
+  deviceType?: 'phone' | 'desktop' | 'headset' | 'unknown';
 }
 
 interface InteractData {
@@ -46,6 +51,24 @@ interface ShowCueData {
   cue: ShowCue;
 }
 
+interface CueEngineBeatData {
+  beatId: string;
+  startedAt: number;
+  momentId?: string;
+  force?: boolean;
+}
+
+interface CueEngineMomentData {
+  momentId: string;
+  startedAt: number;
+  force?: boolean;
+}
+
+interface PrivateCueData {
+  targetSocketId: string;
+  payload: unknown;
+}
+
 export default function registerLobbySocket(io: Server): void {
   io.on('connection', (socket: Socket) => {
     console.log(`🔌 User connected: ${socket.id}`);
@@ -53,12 +76,15 @@ export default function registerLobbySocket(io: Server): void {
     // Handle user joining lobby
     socket.on('joinLobby', async (data: JoinLobbyData) => {
       try {
-        const { role, name, fromScene } = data;
+        const { role, name, fromScene, deviceType } = data;
 
         if (!isValidRole(role)) {
           socket.emit('error', { message: 'Invalid role' });
           return;
         }
+
+        // Participants join under the current show; honor an explicit code if sent.
+        const showCode = (data.showCode && data.showCode.trim()) || getShowCode();
 
         // Upsert so reconnect / duplicate joinLobby never creates twin User rows.
         const user = await User.findOneAndUpdate(
@@ -69,6 +95,9 @@ export default function registerLobbySocket(io: Server): void {
             role,
             roomId: 'lobby',
             inScene: !!fromScene,
+            showCode,
+            deviceType: deviceType || 'unknown',
+            joinedAt: new Date(),
           },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
@@ -236,6 +265,11 @@ export default function registerLobbySocket(io: Server): void {
         const payload = getShowState().startScene(sceneId, safeMode);
         io.to('lobby').emit('sceneTransition', payload);
         console.log(`🎭 Director ${user.name} started ${sceneId} (${safeMode})`);
+
+        // Auto-open live voice for on-stage AI NPCs once the scene has settled.
+        if (sceneId === 'ACT_1_STORM_ROAD') {
+          setTimeout(() => getDirectorController().enableOnStageAIVoices(), 1200);
+        }
       } catch (error) {
         console.error('Error starting act:', error);
         socket.emit('error', { message: 'Failed to start act' });
@@ -260,6 +294,74 @@ export default function registerLobbySocket(io: Server): void {
       } catch (error) {
         console.error('Error firing show cue:', error);
         socket.emit('error', { message: 'Failed to fire cue' });
+      }
+    });
+
+    socket.on('cueEngine:startBeat', async (data: CueEngineBeatData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can start beats' });
+          return;
+        }
+        const beatId = data?.beatId;
+        if (!beatId || !VALID_BEAT_IDS.includes(beatId)) {
+          socket.emit('notice', { message: 'Unknown beat.' });
+          return;
+        }
+        const payload = {
+          beatId,
+          startedAt: typeof data.startedAt === 'number' ? data.startedAt : Date.now(),
+          momentId: data.momentId,
+          force: !!data.force,
+        };
+        io.to('lobby').emit('cueEngine:beatStart', payload);
+        console.log(`🎬 Director ${user.name} started beat "${beatId}"`);
+      } catch (error) {
+        console.error('Error starting beat:', error);
+        socket.emit('error', { message: 'Failed to start beat' });
+      }
+    });
+
+    socket.on('cueEngine:startMoment', async (data: CueEngineMomentData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can start moments' });
+          return;
+        }
+        const momentId = data?.momentId;
+        if (!momentId || !VALID_MOMENT_IDS.includes(momentId)) {
+          socket.emit('notice', { message: 'Unknown moment.' });
+          return;
+        }
+        const payload = {
+          momentId,
+          startedAt: typeof data.startedAt === 'number' ? data.startedAt : Date.now(),
+          force: !!data.force,
+        };
+        io.to('lobby').emit('cueEngine:momentStart', payload);
+        console.log(`🎭 Director ${user.name} started moment "${momentId}"`);
+      } catch (error) {
+        console.error('Error starting moment:', error);
+        socket.emit('error', { message: 'Failed to start moment' });
+      }
+    });
+
+    // Director → single target: private (per-participant) audience cue.
+    // Relayed ONLY to the targeted socket so other clients never hear it.
+    socket.on('audience:privateCue', async (data: PrivateCueData) => {
+      try {
+        const user = await User.findOne({ socketId: socket.id });
+        if (!user || user.role !== 'Director') {
+          socket.emit('error', { message: 'Only the Director can send private cues' });
+          return;
+        }
+        const targetSocketId = data?.targetSocketId;
+        if (!targetSocketId || !data?.payload) return;
+        io.to(targetSocketId).emit('audience:privateCue', data.payload);
+      } catch (error) {
+        console.error('Error sending private cue:', error);
       }
     });
 

@@ -14,6 +14,10 @@ export class SocketClient {
   private onShowStateCallback?: (data: any) => void;
   private onSceneTransitionCallback?: (data: any) => void;
   private onShowCueCallback?: (data: any) => void;
+  private onCueEngineBeatStartCallback?: (data: any) => void;
+  private onCueEngineMomentStartCallback?: (data: any) => void;
+  private onPrivateCueCallback?: (data: any) => void;
+  private onCalmResetCallback?: () => void;
   private onNpcRosterCallback?: (data: any) => void;
   private onNpcStateCallback?: (data: any) => void;
   private onNpcCueCallback?: (data: any) => void;
@@ -123,6 +127,24 @@ export class SocketClient {
       if (this.onShowCueCallback) this.onShowCueCallback(data);
     });
 
+    this.socket.on('cueEngine:beatStart', (data: any) => {
+      if (this.onCueEngineBeatStartCallback) this.onCueEngineBeatStartCallback(data);
+    });
+
+    this.socket.on('cueEngine:momentStart', (data: any) => {
+      if (this.onCueEngineMomentStartCallback) this.onCueEngineMomentStartCallback(data);
+    });
+
+    // Private (per-participant) audience cue — only delivered to the target client.
+    this.socket.on('audience:privateCue', (data: any) => {
+      if (this.onPrivateCueCallback) this.onPrivateCueCallback(data);
+    });
+
+    // Global Calm / Reset broadcast (Stream Deck safety button).
+    this.socket.on('audience:calmReset', () => {
+      if (this.onCalmResetCallback) this.onCalmResetCallback();
+    });
+
     // ----- ARC NPC system protocol -----
 
     this.socket.on('npc:roster', (data: any) => {
@@ -156,8 +178,13 @@ export class SocketClient {
     });
   }
 
-  public joinLobby(role: string, name: string, fromScene: boolean = false): void {
-    this.socket.emit('joinLobby', { role, name, fromScene });
+  public joinLobby(
+    role: string,
+    name: string,
+    fromScene: boolean = false,
+    opts: { showCode?: string; deviceType?: string } = {}
+  ): void {
+    this.socket.emit('joinLobby', { role, name, fromScene, ...opts });
   }
 
   public activateLevel(): void {
@@ -192,6 +219,34 @@ export class SocketClient {
     this.socket.emit('showCue', { cue });
   }
 
+  public startBeat(beatId: string, startedAt: number, opts?: { momentId?: string; force?: boolean }): void {
+    this.socket.emit('cueEngine:startBeat', {
+      beatId,
+      startedAt,
+      momentId: opts?.momentId,
+      force: opts?.force,
+    });
+  }
+
+  public startMoment(momentId: string, startedAt: number, force?: boolean): void {
+    this.socket.emit('cueEngine:startMoment', { momentId, startedAt, force });
+  }
+
+  /** Director → server: deliver a private cue to a single participant's socket. */
+  public sendPrivateCue(targetSocketId: string, payload: unknown): void {
+    this.socket.emit('audience:privateCue', { targetSocketId, payload });
+  }
+
+  /** Target client ← server: a private cue addressed to us. */
+  public onPrivateCue(callback: (data: any) => void): void {
+    this.onPrivateCueCallback = callback;
+  }
+
+  /** All clients ← server: global Calm / Reset. */
+  public onCalmReset(callback: () => void): void {
+    this.onCalmResetCallback = callback;
+  }
+
   public onShowState(callback: (data: any) => void): void {
     this.onShowStateCallback = callback;
   }
@@ -202,6 +257,14 @@ export class SocketClient {
 
   public onShowCue(callback: (data: any) => void): void {
     this.onShowCueCallback = callback;
+  }
+
+  public onCueEngineBeatStart(callback: (data: any) => void): void {
+    this.onCueEngineBeatStartCallback = callback;
+  }
+
+  public onCueEngineMomentStart(callback: (data: any) => void): void {
+    this.onCueEngineMomentStartCallback = callback;
   }
 
   // ----- ARC NPC system protocol -----

@@ -237,6 +237,20 @@ export class DirectorController {
 
   // ---------- broadcasts ----------
 
+  /**
+   * Open live AI voice for every on-stage, AI-driven NPC (e.g. when Act 1 starts).
+   * Reuses ENABLE_CONVERSATION so all clients sync. Clients still need one
+   * audio-unlock gesture for the browser to permit playback.
+   */
+  enableOnStageAIVoices(): void {
+    for (const npc of this.npcs.values()) {
+      if (npc.visibleInWorld && npc.isAI && !npc.conversationEnabled) {
+        this.executeCue(npc.id, 'ENABLE_CONVERSATION');
+        console.log(`🎙️  Auto-enabled live voice for on-stage AI NPC "${npc.id}"`);
+      }
+    }
+  }
+
   broadcastRoster(target?: { emit: (ev: string, data: any) => void }): void {
     const payload = { npcs: this.getPublicSnapshots() };
     if (target) target.emit('npc:roster', payload);

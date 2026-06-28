@@ -1,35 +1,45 @@
 import * as THREE from 'three';
 import { PhysicsManager } from './physics-manager';
+import { InputManager } from './input/InputManager';
+import {
+  PLAYER_BODY_CENTER_Y,
+  cameraOffsetFromGroundEye,
+  eyeHeightForRole,
+} from './player/playerScale';
 
 export class FPSController {
   private camera: THREE.Camera;
   private domElement: HTMLElement;
-  private moveForward = false;
-  private moveBackward = false;
-  private moveLeft = false;
-  private moveRight = false;
+  private input: InputManager;
   private role: string;
-  private eyeHeight: number;
+  private eyeHeightFromGround: number;
+  /** Added to physics body Y to place the camera at eye level (not full eye height). */
+  private cameraOffsetY: number;
   private physicsManager: PhysicsManager;
   private lastJumpTime = 0;
   private jumpCooldown = 500; // ms
+  private readonly maxPitch = Math.PI / 2 - 0.05;
 
-  constructor(camera: THREE.Camera, domElement: HTMLElement, role: string = 'Actor') {
+  constructor(camera: THREE.Camera, domElement: HTMLElement, role: string = 'Actor', input: InputManager) {
     this.camera = camera;
     this.domElement = domElement;
     this.role = role;
-    this.eyeHeight = role === 'Director' ? 3.0 : 1.6;
-    
+    this.input = input;
+    this.eyeHeightFromGround = eyeHeightForRole(role);
+    this.cameraOffsetY = cameraOffsetFromGroundEye(this.eyeHeightFromGround);
+
     // Initialize physics manager
     this.physicsManager = new PhysicsManager();
-    
-    // Set initial camera position
-    const initialPosition = new THREE.Vector3(0, this.eyeHeight, 0);
+
+    // Camera at eye height; physics capsule center sits lower (see playerScale.ts).
+    const initialPosition = new THREE.Vector3(0, this.eyeHeightFromGround, 0);
     this.camera.position.copy(initialPosition);
-    
+
     // Wait for physics world to be ready, then create player body
     this.physicsManager.waitForWorld().then(() => {
-      this.physicsManager.createPlayerBody(initialPosition);
+      this.physicsManager.createPlayerBody(
+        new THREE.Vector3(0, PLAYER_BODY_CENTER_Y, 0)
+      );
       console.log('✅ Physics player body created');
     }).catch(err => {
       console.error('❌ Failed to create physics body:', err);
@@ -38,132 +48,60 @@ export class FPSController {
     // Set rotation order to prevent gimbal lock
     // YXZ order: Y (yaw/horizontal) -> X (pitch/vertical) -> Z (roll)
     this.camera.rotation.order = 'YXZ';
-    
-    this.initListeners();
   }
 
-  private initListeners(): void {
-    const onKeyDown = (e: KeyboardEvent) => {
-      switch (e.code) {
-        case 'ArrowUp':
-        case 'KeyW':
-          this.moveForward = true;
-          break;
-        case 'ArrowLeft':
-        case 'KeyA':
-          this.moveLeft = true;
-          break;
-        case 'ArrowDown':
-        case 'KeyS':
-          this.moveBackward = true;
-          break;
-        case 'ArrowRight':
-        case 'KeyD':
-          this.moveRight = true;
-          break;
-        case 'Space':
-          this.jump();
-          break;
-      }
-    };
-
-    const onKeyUp = (e: KeyboardEvent) => {
-      switch (e.code) {
-        case 'ArrowUp':
-        case 'KeyW':
-          this.moveForward = false;
-          break;
-        case 'ArrowLeft':
-        case 'KeyA':
-          this.moveLeft = false;
-          break;
-        case 'ArrowDown':
-        case 'KeyS':
-          this.moveBackward = false;
-          break;
-        case 'ArrowRight':
-        case 'KeyD':
-          this.moveRight = false;
-          break;
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
-
-    // Pointer lock for mouse look
-    this.domElement.addEventListener('click', () => {
-      this.domElement.requestPointerLock();
-    });
-
-    document.addEventListener('mousemove', (event: MouseEvent) => {
-      if (document.pointerLockElement === this.domElement) {
-        // Update yaw (horizontal rotation)
-        this.camera.rotation.y -= event.movementX * 0.002;
-        
-        // Update pitch (vertical rotation)
-        this.camera.rotation.x -= event.movementY * 0.002;
-        
-        // Clamp vertical rotation to prevent looking too far up/down
-        this.camera.rotation.x = Math.max(
-          -Math.PI / 2,
-          Math.min(Math.PI / 2, this.camera.rotation.x)
-        );
-        
-        // Lock roll to prevent unwanted rotation
-        this.camera.rotation.z = 0;
-      }
-    });
+  /** Apply accumulated look delta (mouse / touch / gyro) to the camera. */
+  private applyLook(): void {
+    const look = this.input.getLookDelta();
+    if (look.x === 0 && look.y === 0) return;
+    this.camera.rotation.y -= look.x; // yaw
+    this.camera.rotation.x -= look.y; // pitch
+    // Clamp pitch so the camera never flips over.
+    this.camera.rotation.x = Math.max(-this.maxPitch, Math.min(this.maxPitch, this.camera.rotation.x));
+    this.camera.rotation.z = 0; // lock roll
   }
 
   public update(delta: number): void {
+    // Look is the same regardless of physics readiness.
+    this.applyLook();
+    if (this.input.consumeJump()) this.jump();
+
+    const move = this.input.getMoveVector();
+
     // Only update if physics world is ready
     if (!this.physicsManager.getWorld()) {
       // Use simple kinematic movement as fallback until physics is ready
-      this.updateKinematicMovement(delta);
+      this.updateKinematicMovement(delta, move.x, move.y);
       return;
     }
     
     // Update physics world
     this.physicsManager.update(delta);
     
-    // Apply movement based on current input
-    this.physicsManager.applyMovement(
-      this.moveForward,
-      this.moveBackward,
-      this.moveLeft,
-      this.moveRight,
-      this.camera.rotation
-    );
+    // Apply analog movement (works for keyboard, joystick, and VR thumbstick).
+    this.physicsManager.applyMovementVector(move.x, move.y, this.camera.rotation);
     
     // Update camera position to follow physics body
     const physicsPosition = this.physicsManager.getPlayerPosition();
-    if (physicsPosition.length() > 0 || physicsPosition.x !== 0 || physicsPosition.z !== 0) {
-      this.camera.position.set(
-        physicsPosition.x,
-        physicsPosition.y + this.eyeHeight,
-        physicsPosition.z
-      );
-    }
+    this.camera.position.set(
+      physicsPosition.x,
+      physicsPosition.y + this.cameraOffsetY,
+      physicsPosition.z
+    );
   }
 
-  private updateKinematicMovement(delta: number): void {
+  private updateKinematicMovement(delta: number, strafe: number, forward: number): void {
     // Simple fallback movement until physics is ready
     const speed = this.role === 'Director' ? 6.0 : 4.0;
     const moveSpeed = speed * delta;
 
-    const direction = new THREE.Vector3();
-    if (this.moveForward) direction.z -= 1;
-    if (this.moveBackward) direction.z += 1;
-    if (this.moveLeft) direction.x -= 1;
-    if (this.moveRight) direction.x += 1;
-
-    if (direction.length() > 0) {
+    const direction = new THREE.Vector3(strafe, 0, -forward);
+    if (direction.length() > 0.0001) {
+      const magnitude = Math.min(1, direction.length());
       direction.normalize();
       const euler = new THREE.Euler(0, this.camera.rotation.y, 0);
       direction.applyEuler(euler);
-
-      this.camera.position.add(direction.multiplyScalar(moveSpeed));
+      this.camera.position.add(direction.multiplyScalar(moveSpeed * magnitude));
     }
   }
 
@@ -177,10 +115,9 @@ export class FPSController {
   }
 
   public resetToSpawn(): void {
-    const spawn = new THREE.Vector3(0, this.eyeHeight, 0);
-    this.camera.position.copy(spawn);
+    this.camera.position.set(0, this.eyeHeightFromGround, 0);
     this.camera.rotation.set(0, 0, 0);
-    this.physicsManager.setPlayerPosition(spawn);
+    this.physicsManager.setPlayerPosition(new THREE.Vector3(0, PLAYER_BODY_CENTER_Y, 0));
     this.physicsManager.setPlayerRotation(new THREE.Euler(0, 0, 0));
   }
 
@@ -188,9 +125,9 @@ export class FPSController {
   // Used by the show system to drop players into a scene's spawn position.
   public setPosition(x: number, z: number, yaw: number = 0): void {
     this.camera.rotation.set(0, yaw, 0);
-    // Physics body tracks foot position (y=0 on the floor); camera sits at eye height.
-    this.physicsManager.setPlayerPosition(new THREE.Vector3(x, 0, z));
-    this.camera.position.set(x, this.eyeHeight, z);
+    // Physics body = capsule center; camera = eye height from ground.
+    this.physicsManager.setPlayerPosition(new THREE.Vector3(x, PLAYER_BODY_CENTER_Y, z));
+    this.camera.position.set(x, this.eyeHeightFromGround, z);
     this.physicsManager.setPlayerRotation(new THREE.Euler(0, 0, 0));
   }
 
@@ -210,12 +147,15 @@ export class FPSController {
     return this.physicsManager;
   }
 
-  /** Set movement from VR controller thumbstick (e.g. from gamepad axes). */
+  /**
+   * Set movement from VR controller thumbstick (e.g. from gamepad axes).
+   * Routes through the same InputManager as every other source so the movement
+   * pipeline stays unified.
+   */
   public setVRMovement(forward: boolean, backward: boolean, left: boolean, right: boolean): void {
-    this.moveForward = forward;
-    this.moveBackward = backward;
-    this.moveLeft = left;
-    this.moveRight = right;
+    const x = (right ? 1 : 0) - (left ? 1 : 0);
+    const y = (forward ? 1 : 0) - (backward ? 1 : 0);
+    this.input.setVRMove(x, y);
   }
 }
 

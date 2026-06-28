@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { AudioManager } from './AudioManager';
+import { lostInTheStormCuePack, resolveCuePackSrc } from './cuePacks/lostInTheStorm';
 
 const LAYER_RAIN = 'storm_rain';
 const LAYER_WIND = 'storm_wind';
+const LAYER_ACT1_DRONE = 'act1_drone';
 
 /**
  * Theatrical staging helpers for "Lost in the Storm".
@@ -21,6 +23,24 @@ export class LostInTheStormCues {
   stopStormAmbience(): void {
     this.audio.stopLoop(LAYER_RAIN, 2);
     this.audio.stopLoop(LAYER_WIND, 2.5);
+  }
+
+  /**
+   * Opening cinematic drone bed for Act 1. Plays a library file (cue pack entry
+   * `cinematic.act1Drone`) on a global loop so every client hears it. Called by
+   * ShowController when Act 1 starts (both instant and assemble modes).
+   */
+  async startAct1Drone(): Promise<void> {
+    const drone = lostInTheStormCuePack.cinematic.act1Drone;
+    await this.audio.playGlobalLoop(resolveCuePackSrc(drone), {
+      layer: LAYER_ACT1_DRONE,
+      volume: drone.volume,
+      fadeIn: 3,
+    });
+  }
+
+  stopAct1Drone(): void {
+    this.audio.stopLoop(LAYER_ACT1_DRONE, 3);
   }
 
   async intensifyRain(): Promise<void> {

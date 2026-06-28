@@ -10,7 +10,7 @@ export type SceneId = 'PRE_SHOW' | 'ACT_1_STORM_ROAD';
 export type TransitionMode = 'instant' | 'assemble';
 
 /** Visual stage cues (client-side effects). */
-export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight';
+export type VisualShowCue = 'thunder' | 'lightning' | 'rainUp' | 'gateLight' | 'blackout';
 
 /** Storm audio cues (Lost in the Storm cue pack). */
 export type StormAudioCue =
@@ -50,6 +50,7 @@ export const VALID_CUES: ShowCue[] = [
   'lightning',
   'rainUp',
   'gateLight',
+  'blackout',
   ...STORM_AUDIO_CUES,
 ];
 
